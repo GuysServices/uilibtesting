@@ -299,7 +299,7 @@ ConsoleTab:CreateButton("Clear Console", function()
 end)
 
 ConsoleTab:CreateSeparator()
-ConsoleTab:CreateRichLabel("<b>Welcome to GuysModz Hub Console!</b>\n<i>This console displays script output, errors, and status messages.</i>\n<font color=\"#rgb(100,255,150)\">Green = Success</font> | <font color=\"#rgb(255,200,80)\">Yellow = Warning</font> | <font color=\"#rgb(255,100,100)\">Red = Error</font>")
+ConsoleTab:CreateRichLabel("<b>Welcome to GuysModz Hub Console!</b>\n<i>This console displays script output, errors, and status messages.</i>\n<font color=\"rgb(100,255,150)\">Green = Success</font> | <font color=\"rgb(255,200,80)\">Yellow = Warning</font> | <font color=\"rgb(255,100,100)\">Red = Error</font>")
 
 -- Initial log
 Console.Success("GuysModz Hub loaded successfully!")
@@ -863,23 +863,25 @@ end, "Color of the FOV circle")
 
 AimbotTab:CreateSeparator()
 AimbotTab:CreateLabel("Status")
-local AimbotStatusLabel = AimbotTab:CreateRichLabel("<b>Status:</b> <font color=\"#rgb(255,80,80)\">Disabled</font>")
-local AimbotTargetLabel = AimbotTab:CreateRichLabel("<b>Target:</b> <font color=\"#rgb(150,150,170)\">None</font>")
+local AimbotStatusLabel = AimbotTab:CreateRichLabel("<b>Status:</b> <font color=\"rgb(255,80,80)\">Disabled</font>")
+local AimbotTargetLabel = AimbotTab:CreateRichLabel("<b>Target:</b> <font color=\"rgb(150,150,170)\">None</font>")
 
 -- Update status labels
 task.spawn(function()
     while true do
-        if AimbotSettings.Enabled then
-            AimbotStatusLabel.Set("<b>Status:</b> <font color=\"#rgb(80,200,120)\">Enabled</font>")
-            if AimbotTarget then
-                AimbotTargetLabel.Set("<b>Target:</b> <font color=\"#rgb(100,120,255)\">" .. AimbotTarget.Name .. "</font>")
+        pcall(function()
+            if AimbotSettings.Enabled then
+                AimbotStatusLabel.Set("<b>Status:</b> <font color=\"rgb(80,200,120)\">Enabled</font>")
+                if AimbotTarget then
+                    AimbotTargetLabel.Set("<b>Target:</b> <font color=\"rgb(100,120,255)\">" .. AimbotTarget.Name .. "</font>")
+                else
+                    AimbotTargetLabel.Set("<b>Target:</b> <font color=\"rgb(150,150,170)\">None</font>")
+                end
             else
-                AimbotTargetLabel.Set("<b>Target:</b> <font color=\"#rgb(150,150,170)\">None</font>")
+                AimbotStatusLabel.Set("<b>Status:</b> <font color=\"rgb(255,80,80)\">Disabled</font>")
+                AimbotTargetLabel.Set("<b>Target:</b> <font color=\"rgb(150,150,170)\">None</font>")
             end
-        else
-            AimbotStatusLabel.Set("<b>Status:</b> <font color=\"#rgb(255,80,80)\">Disabled</font>")
-            AimbotTargetLabel.Set("<b>Target:</b> <font color=\"#rgb(150,150,170)\">None</font>")
-        end
+        end)
         task.wait(0.1)
     end
 end)
@@ -944,7 +946,7 @@ end)
 
 SettingsTab:CreateSeparator()
 SettingsTab:CreateLabel("About")
-SettingsTab:CreateRichLabel("<b>GuysModz Hub v1.0</b>\nCreated by <font color=\"#rgb(100,120,255)\">GuysModz</font>\nUI Library — Full Edition\n\n<i>Press RightShift to toggle the UI.</i>")
+SettingsTab:CreateRichLabel("<b>GuysModz Hub v1.0</b>\nCreated by <font color=\"rgb(100,120,255)\">GuysModz</font>\nUI Library — Full Edition\n\n<i>Press RightShift to toggle the UI.</i>")
 SettingsTab:CreateBadge("v1.0", Color3.fromRGB(80, 200, 120))
 SettingsTab:CreateBadge("Full Edition", Color3.fromRGB(255, 140, 30))
 

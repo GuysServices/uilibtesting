@@ -848,8 +848,10 @@ function Library:CreateWindow(title)
         local function SelectTab()
             for _, tab in ipairs(Window.Tabs) do
                 tab.Page.Visible = false
-                Tween(tab.Button:FindFirstChild("TextLabel"), { TextColor3 = Theme.TextDim }, 0.15)
-                Tween(tab.Button:FindFirstChild("Indicator"), { BackgroundTransparency = 1 }, 0.15)
+                local lbl = tab.Button:FindFirstChild("TextLabel")
+                local ind = tab.Button:FindFirstChild("Indicator")
+                if lbl then Tween(lbl, { TextColor3 = Theme.TextDim }, 0.15) end
+                if ind then Tween(ind, { BackgroundTransparency = 1 }, 0.15) end
             end
             Page.Visible = true
             Tween(TabLabel, { TextColor3 = Theme.Text }, 0.15)
@@ -2019,41 +2021,69 @@ function Library:CreateWindow(title)
                 Arrow.Text = expanded and "▼" or "▶"
             end)
 
-            -- Section API — same element creation methods as Tab
+            -- Section API — create elements directly in Content
             local Section = {}
 
+            -- Store original Page reference and temporarily swap it
+            local OriginalPage = Page
+            local function WithContent(fn)
+                Tab.Page = Content
+                local ok, result = pcall(fn)
+                Tab.Page = OriginalPage
+                if not ok then error(result) end
+                return result
+            end
+
             function Section:CreateButton(text, callback, tooltip)
-                local btn = Tab:CreateButton(text, callback, tooltip)
-                btn.Parent = Content
-                return btn
+                return WithContent(function() return Tab:CreateButton(text, callback, tooltip) end)
             end
             function Section:CreateToggle(text, defaultState, callback, tooltip)
-                local el = Tab:CreateToggle(text, defaultState, callback, tooltip)
-                -- Reparent
-                return el
+                return WithContent(function() return Tab:CreateToggle(text, defaultState, callback, tooltip) end)
             end
-
-            -- Generic reparenting wrapper
-            local function WrapCreate(methodName)
-                return function(_, ...)
-                    local result = Tab[methodName](Tab, ...)
-                    -- Find the last child added to Page and move it to Content
-                    local lastChild = nil
-                    for _, child in ipairs(Page:GetChildren()) do
-                        if child:IsA("Frame") or child:IsA("TextLabel") or child:IsA("TextButton") then
-                            if child.Parent == Page then lastChild = child end
-                        end
-                    end
-                    if lastChild then lastChild.Parent = Content end
-                    return result
-                end
+            function Section:CreateSlider(text, min, max, default, callback, tooltip, decimals)
+                return WithContent(function() return Tab:CreateSlider(text, min, max, default, callback, tooltip, decimals) end)
             end
-
-            -- Override all element methods to reparent to Content
-            for methodName, method in pairs(Tab) do
-                if type(method) == "function" and methodName:match("^Create") and methodName ~= "CreateCollapsibleSection" then
-                    Section[methodName] = WrapCreate(methodName)
-                end
+            function Section:CreateTextBox(text, callback, tooltip)
+                return WithContent(function() return Tab:CreateTextBox(text, callback, tooltip) end)
+            end
+            function Section:CreateNumberBox(text, default, callback, tooltip)
+                return WithContent(function() return Tab:CreateNumberBox(text, default, callback, tooltip) end)
+            end
+            function Section:CreateSearchBox(text, callback, tooltip)
+                return WithContent(function() return Tab:CreateSearchBox(text, callback, tooltip) end)
+            end
+            function Section:CreateDropdown(text, options, default, callback, tooltip)
+                return WithContent(function() return Tab:CreateDropdown(text, options, default, callback, tooltip) end)
+            end
+            function Section:CreateMultiDropdown(text, options, defaults, callback, tooltip)
+                return WithContent(function() return Tab:CreateMultiDropdown(text, options, defaults, callback, tooltip) end)
+            end
+            function Section:CreateColorPicker(text, defaultColor, callback, tooltip)
+                return WithContent(function() return Tab:CreateColorPicker(text, defaultColor, callback, tooltip) end)
+            end
+            function Section:CreateKeybind(text, defaultKey, callback, tooltip)
+                return WithContent(function() return Tab:CreateKeybind(text, defaultKey, callback, tooltip) end)
+            end
+            function Section:CreateLabel(text)
+                return WithContent(function() return Tab:CreateLabel(text) end)
+            end
+            function Section:CreateRichLabel(text)
+                return WithContent(function() return Tab:CreateRichLabel(text) end)
+            end
+            function Section:CreateSeparator()
+                return WithContent(function() return Tab:CreateSeparator() end)
+            end
+            function Section:CreateBadge(text, color)
+                return WithContent(function() return Tab:CreateBadge(text, color) end)
+            end
+            function Section:CreateImageLabel(imageId, size, tooltip)
+                return WithContent(function() return Tab:CreateImageLabel(imageId, size, tooltip) end)
+            end
+            function Section:CreateProgressBar(text, initial, callback, tooltip)
+                return WithContent(function() return Tab:CreateProgressBar(text, initial, callback, tooltip) end)
+            end
+            function Section:CreateConsole(maxLines)
+                return WithContent(function() return Tab:CreateConsole(maxLines) end)
             end
 
             return Section
