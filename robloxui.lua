@@ -255,7 +255,7 @@ function Library:CreateWatermark(text)
     end)
 
     wm.Position = UDim2.new(0, 10, 0, 10)
-    wm.Parent = NotificationContainer.Parent
+    wm.Parent = GetParent()
 
     return {
         Set = function(newText) label.Text = newText end,
@@ -273,7 +273,7 @@ function Library:CreateLoadingScreen(text, duration)
         BackgroundColor3 = Theme.Background,
         ZIndex = 10000,
     })
-    screen.Parent = NotificationContainer.Parent
+    screen.Parent = GetParent()
 
     local container = Create("Frame", {
         Size = UDim2.new(0, 300, 0, 80),
@@ -331,7 +331,7 @@ function Library:CreateConfirmationDialog(title, message, onConfirm, onCancel)
         BackgroundTransparency = 0.5,
         ZIndex = 8000,
     })
-    overlay.Parent = NotificationContainer.Parent
+    overlay.Parent = GetParent()
 
     local dialog = Create("Frame", {
         Size = UDim2.new(0, 360, 0, 0),
@@ -446,7 +446,7 @@ function Library:CreateStatsDisplay()
     AddCorner(container, UDim.new(0, 8))
     AddStroke(container, Theme.Accent, 1, 0.3)
     AddPadding(container, 8)
-    container.Parent = NotificationContainer.Parent
+    container.Parent = GetParent()
 
     local layout = Create("UIListLayout", {
         SortOrder = Enum.SortOrder.LayoutOrder,
