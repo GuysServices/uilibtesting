@@ -373,25 +373,31 @@ local ESPSettings = {
 -- ESP drawing storage
 local ESPDrawings = {}
 local ESPConnection = nil
+local DrawingSupported = pcall(function() return Drawing.new("Square") end)
 
 local function CreateDrawing(class, props)
-    local drawing = Drawing.new(class)
-    for prop, value in pairs(props or {}) do
-        drawing[prop] = value
-    end
-    return drawing
+    if not DrawingSupported then return nil end
+    local ok, drawing = pcall(function()
+        local d = Drawing.new(class)
+        for prop, value in pairs(props or {}) do
+            d[prop] = value
+        end
+        return d
+    end)
+    if ok then return drawing else return nil end
 end
 
 local function ClearESP()
     for player, drawings in pairs(ESPDrawings) do
         for _, d in pairs(drawings) do
-            pcall(function() d:Remove() end)
+            if d and d.Remove then pcall(function() d:Remove() end) end
         end
     end
     ESPDrawings = {}
 end
 
 local function GetESPDrawings(player)
+    if not DrawingSupported then return {} end
     if not ESPDrawings[player] then
         ESPDrawings[player] = {
             Box = CreateDrawing("Square", { Thickness = ESPSettings.Thickness, Filled = false, Visible = false, Color = ESPSettings.BoxColor }),
@@ -407,6 +413,7 @@ local function GetESPDrawings(player)
 end
 
 local function UpdateESP()
+    if not DrawingSupported then return end
     local camera = workspace.CurrentCamera
     if not camera then return end
     local localPlayer = game.Players.LocalPlayer
@@ -532,8 +539,12 @@ ESPTab:CreateBadge("Player ESP", Color3.fromRGB(0, 200, 120))
 local ESPToggle = ESPTab:CreateToggle("Enable ESP", false, function(state)
     ESPSettings.Enabled = state
     if state then
-        StartESP()
-        Library:Notify("ESP", "ESP enabled!")
+        if not DrawingSupported then
+            Library:Notify("ESP", "Warning: Drawing API not supported by your executor. ESP will not work.")
+        else
+            StartESP()
+            Library:Notify("ESP", "ESP enabled!")
+        end
     else
         StopESP()
         Library:Notify("ESP", "ESP disabled.")
@@ -639,7 +650,7 @@ local FOVCircle = CreateDrawing("Circle", {
     Filled = false,
     Visible = false,
     NumSides = 60,
-})
+}) or {}
 
 -- Aimbot logic
 local AimbotConnection = nil
@@ -713,12 +724,12 @@ local function AimbotLoop()
     local camera = workspace.CurrentCamera
 
     -- Update FOV circle
-    if AimbotSettings.ShowFOV and AimbotSettings.Enabled then
+    if AimbotSettings.ShowFOV and AimbotSettings.Enabled and FOVCircle and FOVCircle.Visible ~= nil then
         FOVCircle.Position = UserInputService:GetMouseLocation()
         FOVCircle.Radius = AimbotSettings.FOV
         FOVCircle.Color = AimbotSettings.FOVColor
         FOVCircle.Visible = true
-    else
+    elseif FOVCircle and FOVCircle.Visible ~= nil then
         FOVCircle.Visible = false
     end
 
@@ -749,7 +760,7 @@ end
 
 local function StopAimbot()
     if AimbotConnection then AimbotConnection:Disconnect() AimbotConnection = nil end
-    FOVCircle.Visible = false
+    if FOVCircle and FOVCircle.Visible ~= nil then FOVCircle.Visible = false end
     AimbotTarget = nil
     AimKeyHeld = false
 end
@@ -774,7 +785,11 @@ AimbotTab:CreateToggle("Enable Aimbot", false, function(state)
     AimbotSettings.Enabled = state
     if state then
         StartAimbot()
-        Library:Notify("Aimbot", "Aimbot enabled! Hold " .. AimbotSettings.AimKey.Name .. " to aim.")
+        if DrawingSupported then
+            Library:Notify("Aimbot", "Aimbot enabled! Hold " .. AimbotSettings.AimKey.Name .. " to aim.")
+        else
+            Library:Notify("Aimbot", "Aimbot enabled (no FOV circle - Drawing API not supported). Hold " .. AimbotSettings.AimKey.Name .. " to aim.")
+        end
     else
         StopAimbot()
         Library:Notify("Aimbot", "Aimbot disabled.")
@@ -815,7 +830,7 @@ end, "Lower = smoother aim", 2)
 
 AimbotTab:CreateSlider("FOV Radius", 20, 500, 120, function(value)
     AimbotSettings.FOV = value
-    FOVCircle.Radius = value
+    if FOVCircle and FOVCircle.Radius then FOVCircle.Radius = value end
 end, "Field of view radius")
 
 AimbotTab:CreateSlider("Prediction", 0, 0.5, 0.13, function(value)
@@ -835,7 +850,7 @@ end, "Don't aim at teammates")
 
 AimbotTab:CreateToggle("Show FOV Circle", true, function(state)
     AimbotSettings.ShowFOV = state
-    if not state then FOVCircle.Visible = false end
+    if not state and FOVCircle and FOVCircle.Visible ~= nil then FOVCircle.Visible = false end
 end, "Visualize the FOV radius")
 
 AimbotTab:CreateSeparator()
@@ -843,7 +858,7 @@ AimbotTab:CreateLabel("FOV Circle Color")
 
 AimbotTab:CreateColorPicker("FOV Color", Color3.fromRGB(100, 120, 255), function(color)
     AimbotSettings.FOVColor = color
-    FOVCircle.Color = color
+    if FOVCircle and FOVCircle.Color then FOVCircle.Color = color end
 end, "Color of the FOV circle")
 
 AimbotTab:CreateSeparator()
