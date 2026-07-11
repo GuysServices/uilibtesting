@@ -118,6 +118,19 @@ local function GetParent()
     return LocalPlayer:WaitForChild("PlayerGui")
 end
 
+-- Helper: create a dedicated ScreenGui for standalone elements
+local function CreateStandaloneGui(name, displayOrder)
+    local gui = Create("ScreenGui", {
+        Name = name,
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        IgnoreGuiInset = true,
+    })
+    if displayOrder then gui.DisplayOrder = displayOrder end
+    gui.Parent = GetParent()
+    return gui
+end
+
 --// ─── Tooltip System ──────────────────────────────────────────
 local TooltipGui
 local TooltipFrame
@@ -255,11 +268,15 @@ function Library:CreateWatermark(text)
     end)
 
     wm.Position = UDim2.new(0, 10, 0, 10)
-    wm.Parent = GetParent()
+    wm.Parent = CreateStandaloneGui("GuysModzWatermark", 1)
 
     return {
         Set = function(newText) label.Text = newText end,
-        Destroy = function() wm:Destroy() end,
+        Destroy = function()
+            wm:Destroy()
+            local g = GetParent():FindFirstChild("GuysModzWatermark")
+            if g then g:Destroy() end
+        end,
     }
 end
 
@@ -273,7 +290,7 @@ function Library:CreateLoadingScreen(text, duration)
         BackgroundColor3 = Theme.Background,
         ZIndex = 10000,
     })
-    screen.Parent = GetParent()
+    screen.Parent = CreateStandaloneGui("GuysModzLoading", 100)
 
     local container = Create("Frame", {
         Size = UDim2.new(0, 300, 0, 80),
@@ -331,7 +348,7 @@ function Library:CreateConfirmationDialog(title, message, onConfirm, onCancel)
         BackgroundTransparency = 0.5,
         ZIndex = 8000,
     })
-    overlay.Parent = GetParent()
+    overlay.Parent = CreateStandaloneGui("GuysModzDialog", 50)
 
     local dialog = Create("Frame", {
         Size = UDim2.new(0, 360, 0, 0),
@@ -446,7 +463,7 @@ function Library:CreateStatsDisplay()
     AddCorner(container, UDim.new(0, 8))
     AddStroke(container, Theme.Accent, 1, 0.3)
     AddPadding(container, 8)
-    container.Parent = GetParent()
+    container.Parent = CreateStandaloneGui("GuysModzStats", 1)
 
     local layout = Create("UIListLayout", {
         SortOrder = Enum.SortOrder.LayoutOrder,
@@ -509,7 +526,11 @@ function Library:CreateStatsDisplay()
     end)
 
     return {
-        Destroy = function() container:Destroy() end,
+        Destroy = function()
+            container:Destroy()
+            local g = GetParent():FindFirstChild("GuysModzStats")
+            if g then g:Destroy() end
+        end,
     }
 end
 
@@ -576,6 +597,8 @@ function Library:CreateWindow(title)
         Name = "GuysModzUILibrary",
         ResetOnSpawn = false,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        IgnoreGuiInset = true,
+        DisplayOrder = 10,
     })
     ScreenGui.Parent = GetParent()
 
@@ -2164,6 +2187,8 @@ function Library:CreateAuthModal(config)
         Name = "GuysModzAuthModal",
         ResetOnSpawn = false,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        IgnoreGuiInset = true,
+        DisplayOrder = 100,
     })
     ScreenGui.Parent = parent
 
