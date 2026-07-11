@@ -3,11 +3,15 @@
      Example Script — GuysModz Script Hub (Full Element Demo)
      Shows every UI element in the library + Auth + ESP + Aimbot
      
-     Usage:
-       local Library = loadstring(game:HttpGet("LIBRARY_URL"))()
-       loadstring(game:HttpGet("EXAMPLE_URL"))()
+     Usage (one line in your executor):
+       loadstring(game:HttpGet("https://raw.githubusercontent.com/GuysServices/uilibtesting/main/examplescript.lua"))()
     ═══════════════════════════════════════════════════════════════
 ]]
+
+--═══════════════════════════════════════════════════════════════
+-- LOAD LIBRARY
+--═══════════════════════════════════════════════════════════════
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/GuysServices/uilibtesting/main/robloxui.lua"))()
 
 --═══════════════════════════════════════════════════════════════
 -- 0. AUTH MODAL (Key System)
