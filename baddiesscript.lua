@@ -1,7 +1,7 @@
 --[[
     ═══════════════════════════════════════════════════════════════
-     GuysModz Hub — Baddies Edition v3.0
-     Throwable Magnet (homing throwables)
+     GuysModz Hub — Baddies Edition v3.1
+     Throwable Magnet (safe — no player fling)
      
      Usage:
        loadstring(game:HttpGet("https://raw.githubusercontent.com/GuysServices/uilibtesting/main/baddiesscript.lua"))()
@@ -26,7 +26,7 @@ local Camera = Workspace.CurrentCamera
 Library:CreateLoadingScreen("Loading GuysModz Baddies Hub...", 1.0)
 task.wait(1.0)
 
-local Watermark = Library:CreateWatermark("GuysModz Baddies v3.0")
+local Watermark = Library:CreateWatermark("GuysModz Baddies v3.1")
 local StatsDisplay = Library:CreateStatsDisplay()
 local Window = Library:CreateWindow("GuysModz | Baddies")
 
@@ -61,7 +61,7 @@ local State = {
     -- Throwable magnet
     MagnetEnabled = false,
     MagnetRange = 80,       -- how far a throwable can snap to a target
-    MagnetStrength = 1,     -- 1 = full redirect toward target
+    MagnetStrength = 0.55,  -- soft redirect (hard lock flings people)
     TargetPart = "HumanoidRootPart", -- Head / HumanoidRootPart / UpperTorso
     TeamCheck = false,
     OnlyMyThrowables = true,
@@ -160,8 +160,25 @@ local function IsDescendantOfLocalCharacter(inst)
     return char and inst:IsDescendantOf(char)
 end
 
+local function IsPlayerCharacterPart(inst)
+    if not inst then return false end
+    local model = inst:FindFirstAncestorOfClass("Model")
+    if not model then return false end
+    -- Any model that is a player's Character must never be steered
+    if Players:GetPlayerFromCharacter(model) then
+        return true
+    end
+    if model:FindFirstChildOfClass("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
+        return true
+    end
+    return false
+end
+
 local function OwnedByLocalPlayer(inst)
-    -- Common ownership patterns across tool/projectile systems
+    if not inst or typeof(inst) ~= "Instance" then
+        return false
+    end
+
     local ok, val
 
     ok, val = pcall(function() return inst:GetAttribute("Owner") end)
@@ -184,10 +201,12 @@ local function OwnedByLocalPlayer(inst)
         return true
     end
 
-    -- ObjectValues / StringValues
+    -- ObjectValues / StringValues (nil-safe)
     for _, childName in ipairs({ "Owner", "Creator", "Player", "Thrower" }) do
-        local v = inst:FindFirstChild(childName)
-        if v then
+        local okChild, v = pcall(function()
+            return inst:FindFirstChild(childName)
+        end)
+        if okChild and v then
             if v:IsA("ObjectValue") and v.Value == LocalPlayer then
                 return true
             end
@@ -200,9 +219,10 @@ local function OwnedByLocalPlayer(inst)
         end
     end
 
-    -- Creator tag (classic Roblox)
-    local creator = inst:FindFirstChild("creator") or inst:FindFirstChild("Creator")
-    if creator and creator:IsA("ObjectValue") and creator.Value == LocalPlayer then
+    local okCreator, creator = pcall(function()
+        return inst:FindFirstChild("creator") or inst:FindFirstChild("Creator")
+    end)
+    if okCreator and creator and creator:IsA("ObjectValue") and creator.Value == LocalPlayer then
         return true
     end
 
@@ -210,77 +230,92 @@ local function OwnedByLocalPlayer(inst)
 end
 
 local function IsLikelyThrowable(part)
-    if not part or not part:IsA("BasePart") then return false end
+    if not part or typeof(part) ~= "Instance" then return false end
+    if not part:IsA("BasePart") then return false end
+    if not part.Parent then return false end
     if part.Anchored then return false end
+
+    -- CRITICAL: never touch player characters (this was flinging your friend)
     if IsDescendantOfLocalCharacter(part) then return false end
+    if IsPlayerCharacterPart(part) then return false end
 
-    -- Ignore huge map parts
+    -- Never track accessories / clothes / tools on characters
+    if part:FindFirstAncestorOfClass("Accessory") then return false end
+    if part:FindFirstAncestorOfClass("Tool") and IsPlayerCharacterPart(part:FindFirstAncestorOfClass("Tool").Parent) then
+        return false
+    end
+
     local size = part.Size
-    if size.X > 12 or size.Y > 12 or size.Z > 12 then return false end
-    if size.Magnitude < 0.05 then return false end
+    if size.X > 8 or size.Y > 8 or size.Z > 8 then return false end
+    if size.Magnitude < 0.05 or size.Magnitude > 10 then return false end
 
-    -- Must be moving (or just spawned near us)
     local speed = 0
     pcall(function()
         speed = part.AssemblyLinearVelocity.Magnitude
     end)
 
+    -- Real throwables are moving. Stationary body parts are not.
+    if speed < 8 then return false end
+
     local myHRP = GetHRP()
     local nearMe = false
     if myHRP then
-        nearMe = (part.Position - myHRP.Position).Magnitude < 25
+        nearMe = (part.Position - myHRP.Position).Magnitude < 30
     end
 
-    local owned = OwnedByLocalPlayer(part) or OwnedByLocalPlayer(part.Parent)
-    local nameHit = NameLooksThrowable(part.Name) or NameLooksThrowable(part.Parent and part.Parent.Name)
+    local parent = part.Parent
+    local owned = OwnedByLocalPlayer(part) or (parent and OwnedByLocalPlayer(parent)) or false
+    local nameHit = NameLooksThrowable(part.Name)
+        or (parent and NameLooksThrowable(parent.Name))
+        or false
 
-    -- Heuristic:
-    -- 1) explicitly owned by us
-    -- 2) name looks like a projectile AND near us / moving
-    -- 3) small unanchored part newly near us moving fast
-    if owned then
+    -- Must look like a projectile OR be explicitly owned by us
+    if owned and nearMe and speed > 8 then
         return true
     end
 
     if State.OnlyMyThrowables then
-        -- Still allow name+near+moving for games that don't set owner attrs
-        if nameHit and nearMe and speed > 5 then
+        if nameHit and nearMe and speed > 12 then
             return true
         end
-        if nearMe and speed > 35 and size.Magnitude < 6 then
+        -- Fast small part that just left near the local player (common for untagged throws)
+        if nearMe and speed > 40 and size.Magnitude <= 5 and nameHit then
             return true
         end
         return false
     end
 
-    -- Track any small fast projectile near anyone (riskier)
-    return (nameHit or speed > 20) and size.Magnitude < 8
+    return nameHit and speed > 15 and size.Magnitude < 8
 end
 
 local function SteerProjectile(part, targetPart)
+    -- Safety: never steer character parts
     if not part or not part.Parent or not targetPart or not targetPart.Parent then return end
+    if IsPlayerCharacterPart(part) then return end
 
     local targetPos = targetPart.Position
-    -- slight lead
     pcall(function()
         local vel = targetPart.AssemblyLinearVelocity
-        targetPos = targetPos + vel * 0.08
+        targetPos = targetPos + vel * 0.06
     end)
 
     local pos = part.Position
     local toTarget = targetPos - pos
     local dist = toTarget.Magnitude
-    if dist < 0.1 then return end
+    if dist < 0.25 or dist > State.MagnetRange then return end
 
     local dir = toTarget.Unit
-    local speed = 80
+
+    -- Keep existing speed; only redirect direction (no hard CFrame snap = no fling)
+    local speed = 60
     pcall(function()
         local v = part.AssemblyLinearVelocity.Magnitude
-        if v > 10 then speed = v end
+        if v > 15 then
+            speed = v
+        end
     end)
 
-    -- Blend current velocity toward target (strength 1 = full lock)
-    local strength = math.clamp(State.MagnetStrength, 0.1, 1)
+    local strength = math.clamp(State.MagnetStrength, 0.15, 0.85) -- cap so it's not violent
     local desired = dir * speed
     local current = Vector3.zero
     pcall(function() current = part.AssemblyLinearVelocity end)
@@ -288,25 +323,15 @@ local function SteerProjectile(part, targetPart)
     local newVel = current:Lerp(desired, strength)
     pcall(function()
         part.AssemblyLinearVelocity = newVel
-        -- Keep orientation sensible
-        if part.AssemblyAngularVelocity then
-            part.AssemblyAngularVelocity = Vector3.zero
-        end
-        -- Soft CFrame assist when very close so contact registers client-side
-        if dist < 8 then
-            part.CFrame = CFrame.new(pos, targetPos)
-        end
-        if dist < 3.5 then
-            -- Snap almost onto target for touch/ray games
-            part.CFrame = CFrame.new(targetPos - dir * 1.2, targetPos)
-            part.AssemblyLinearVelocity = dir * math.max(speed, 60)
-        end
+        -- NO CFrame writes, NO position snaps — those fling welded/character parts
     end)
 end
 
 local function TryTrack(part)
     if not State.MagnetEnabled then return end
+    if not part or typeof(part) ~= "Instance" then return end
     if Tracked[part] then return end
+    if IsPlayerCharacterPart(part) then return end
     if not IsLikelyThrowable(part) then return end
 
     local fromPos = part.Position
@@ -371,6 +396,9 @@ local function StartMagnet()
         for part, data in pairs(Tracked) do
             if not part or not part.Parent then
                 Tracked[part] = nil
+            elseif IsPlayerCharacterPart(part) then
+                -- Never keep steering a character part
+                Tracked[part] = nil
             elseif (now - data.start) > State.MaxTrackTime then
                 Tracked[part] = nil
             else
@@ -389,7 +417,7 @@ local function StartMagnet()
                         data.targetPart = closer
                         t = closer
                     end
-                    SteerProjectile(part, t)
+                    pcall(SteerProjectile, part, t)
                 end
             end
         end
@@ -523,9 +551,9 @@ ThrowTab:CreateSlider("Magnet Range", 20, 200, 80, function(value)
     State.MagnetRange = value
 end, "How far throwables will lock onto someone")
 
-ThrowTab:CreateSlider("Magnet Strength", 0.2, 1, 1, function(value)
+ThrowTab:CreateSlider("Magnet Strength", 0.2, 0.85, 0.55, function(value)
     State.MagnetStrength = value
-end, "1 = full lock onto target", 2)
+end, "Higher = stronger home (keep mid to avoid weird physics)", 2)
 
 ThrowTab:CreateDropdown("Target Part", {"HumanoidRootPart", "Head", "UpperTorso", "Torso"}, "HumanoidRootPart", function(selected)
     State.TargetPart = selected
@@ -668,7 +696,7 @@ SettingsTab:CreateDropdown("Theme", {"Dark", "Midnight", "BloodRed", "Green", "P
 end)
 
 SettingsTab:CreateSeparator()
-SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v3.0</b>\nThrowable Magnet + optional melee hitbox\nPress RightShift to toggle UI.")
+SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v3.1</b>\nSafe Throwable Magnet (won't fling players)\nPress RightShift to toggle UI.")
 
 SettingsTab:CreateButton("Destroy UI", function()
     Library:CreateConfirmationDialog("Destroy UI", "Close the hub?", function()
@@ -686,4 +714,4 @@ end)
 --═══════════════════════════════════════════════════════════════
 Window:BindToggleKey(Enum.KeyCode.RightShift)
 
-Library:Notify("GuysModz Baddies", "v3.0 — use Throwable Magnet for snowballs. RightShift toggles UI.")
+Library:Notify("GuysModz Baddies", "v3.1 — safe magnet (won't fling players). RightShift toggles UI.")
