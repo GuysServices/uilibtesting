@@ -1,7 +1,7 @@
 --[[
     ═══════════════════════════════════════════════════════════════
-     GuysModz Hub — Baddies Edition v3.2
-     Snowball Launcher Magnet
+     GuysModz Hub — Baddies Edition v3.3
+     Snowball Launcher Magnet (prop-safe)
      
      Usage:
        loadstring(game:HttpGet("https://raw.githubusercontent.com/GuysServices/uilibtesting/main/baddiesscript.lua"))()
@@ -25,7 +25,7 @@ local Camera = Workspace.CurrentCamera
 Library:CreateLoadingScreen("Loading GuysModz Baddies Hub...", 1.0)
 task.wait(1.0)
 
-local Watermark = Library:CreateWatermark("GuysModz Baddies v3.2")
+local Watermark = Library:CreateWatermark("GuysModz Baddies v3.3")
 local StatsDisplay = Library:CreateStatsDisplay()
 local Window = Library:CreateWindow("GuysModz | Baddies")
 
@@ -140,30 +140,48 @@ local FireWindowUntil = 0 -- after launcher fire, accept nearby new parts briefl
 local SeenParts = {} -- weak-ish set of parts we already evaluated this session
 local UserInputService = game:GetService("UserInputService")
 
+-- STRICT name hints only. Generic words like "part"/"mesh"/"ball" fling map props.
 local THROWABLE_NAME_HINTS = {
-    -- snowball launcher specific
-    "snow", "snowball", "launcher", "sball", "sb_", "ice", "frozen",
-    -- generic projectiles
-    "ball", "throw", "projectile", "proj", "missile", "rocket", "bullet",
-    "dart", "arrow", "orb", "sphere", "pellet", "shot", "blast", "cast",
-    "ammo", "round", "slug", "bolt", "flare", "shell",
-    -- common generic instance names used by games
-    "handle", "tip", "head", "mesh", "part",
+    "snowball", "snow ball", "snow_ball", "sball", "sb_",
+    "projectile", "proj_", "missile", "rocket",
+    "bullet", "pellet", "dart", "slug",
 }
 
 local LAUNCHER_TOOL_HINTS = {
-    "snow", "launcher", "ball", "throw", "gun", "cannon", "blaster", "shooter",
+    "snowball", "snow ball", "snow launcher", "snowball launcher",
+    "launcher", "sball",
+}
+
+-- Map / prop names we must NEVER steer
+local BLOCKED_NAME_HINTS = {
+    "chair", "seat", "couch", "sofa", "table", "desk", "bench",
+    "pretzel", "chicken", "bucket", "food", "drink", "juice",
+    "box", "crate", "sign", "door", "wall", "floor", "roof",
+    "tree", "bush", "plant", "rock", "stone", "fence", "gate",
+    "car", "vehicle", "bike", "wheel", "light", "lamp", "neon",
+    "spawn", "baseplate", "terrain", "water", "ocean",
+    "npc", "dummy", "rig", "man", "woman",
 }
 
 local PROJECTILE_FOLDERS = {
-    "Projectiles", "Thrown", "Throwables", "Effects", "Debris", "Ignore",
-    "Bullets", "Missiles", "Snowballs", "Snowball", "Launcher", "Weapons",
-    "ClientProjectiles", "ServerProjectiles", "FX", "VFX", "Temporary",
-    "WorkspaceProjectiles", "Active", "Runtime",
+    "Projectiles", "Thrown", "Throwables", "Bullets", "Missiles",
+    "Snowballs", "Snowball", "ClientProjectiles", "ServerProjectiles",
+    "WorkspaceProjectiles",
 }
 
-local function NameLooksThrowable(name)
+local function NameLooksBlocked(name)
     if not name then return false end
+    local lower = string.lower(name)
+    for _, hint in ipairs(BLOCKED_NAME_HINTS) do
+        if string.find(lower, hint, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function NameLooksThrowable(name)
+    if not name or NameLooksBlocked(name) then return false end
     local lower = string.lower(name)
     for _, hint in ipairs(THROWABLE_NAME_HINTS) do
         if string.find(lower, hint, 1, true) then
@@ -212,14 +230,8 @@ end
 local function HoldingLauncherTool()
     local tool = GetEquippedTool()
     if not tool then return false end
-    if NameLooksLauncher(tool.Name) then return true end
-    -- also check attributes / child names
-    for _, d in ipairs(tool:GetDescendants()) do
-        if NameLooksLauncher(d.Name) then
-            return true
-        end
-    end
-    return false
+    -- Only the tool name itself — scanning descendants matched random parts before
+    return NameLooksLauncher(tool.Name)
 end
 
 local function InFireWindow()
@@ -227,7 +239,32 @@ local function InFireWindow()
 end
 
 local function OpenFireWindow(seconds)
-    FireWindowUntil = math.max(FireWindowUntil, tick() + (seconds or 1.25))
+    FireWindowUntil = math.max(FireWindowUntil, tick() + (seconds or 0.8))
+end
+
+local function IsWorldProp(part)
+    if not part then return true end
+    if NameLooksBlocked(part.Name) then return true end
+    if part.Parent and NameLooksBlocked(part.Parent.Name) then return true end
+    if part.Parent and part.Parent.Parent and NameLooksBlocked(part.Parent.Parent.Name) then return true end
+
+    -- Anchored map furniture sitting still is never a snowball
+    local speed = 0
+    pcall(function() speed = part.AssemblyLinearVelocity.Magnitude end)
+    if part.Anchored and speed < 1 and not InFireWindow() then
+        return true
+    end
+
+    -- Very large-ish decorative pieces
+    local s = part.Size
+    if s.X >= 4 or s.Y >= 4 or s.Z >= 4 then
+        -- snowballs are small; allow only if name is clearly projectile
+        if not NameLooksThrowable(part.Name) and not (part.Parent and NameLooksThrowable(part.Parent.Name)) then
+            return true
+        end
+    end
+
+    return false
 end
 
 local function OwnedByLocalPlayer(inst)
@@ -323,10 +360,10 @@ local function IsSafeProjectileCandidate(part)
     if IsDescendantOfLocalCharacter(part) then return false end
     if IsPlayerCharacterPart(part) then return false end
     if part:FindFirstAncestorOfClass("Accessory") then return false end
+    if IsWorldProp(part) then return false end
 
     local toolAnc = part:FindFirstAncestorOfClass("Tool")
     if toolAnc then
-        -- tool still equipped on someone = not a free projectile
         local toolParent = toolAnc.Parent
         if toolParent and (toolParent:IsA("Model") and Players:GetPlayerFromCharacter(toolParent)) then
             return false
@@ -336,10 +373,10 @@ local function IsSafeProjectileCandidate(part)
         end
     end
 
-    -- skip terrain-sized junk
+    -- snowballs are small
     local size = part.Size
-    if size.X > 10 or size.Y > 10 or size.Z > 10 then return false end
-    if size.Magnitude < 0.04 or size.Magnitude > 14 then return false end
+    if size.X > 5 or size.Y > 5 or size.Z > 5 then return false end
+    if size.Magnitude < 0.05 or size.Magnitude > 7 then return false end
 
     return true
 end
@@ -359,52 +396,45 @@ local function IsLikelyThrowable(part)
     local owned = OwnedByLocalPlayer(part) or (parent and OwnedByLocalPlayer(parent)) or false
     local nameHit = NameLooksThrowable(part.Name)
         or (parent and NameLooksThrowable(parent.Name))
-        or (parent and parent.Parent and NameLooksThrowable(parent.Parent.Name))
         or false
 
     local launcher = HoldingLauncherTool()
     local fireWin = InFireWindow()
-    local nearMe = distMe < (launcher and 80 or 45)
+    local nearMe = distMe < 35
+    local moving = speed >= 25 -- real shots are fast; chairs/food are not
 
-    -- Anchored snowballs (CFrame/FastCast style) have 0 velocity — still valid during fire window
-    local moving = speed >= 6
-    local maybeAnchoredShot = part.Anchored and (nameHit or fireWin or launcher) and nearMe
+    -- Must be in front of camera (projectiles leave the gun forward)
+    local inFront = true
+    if cam then
+        local toPart = part.Position - cam.CFrame.Position
+        if toPart.Magnitude > 1 then
+            inFront = cam.CFrame.LookVector:Dot(toPart.Unit) > 0.35
+        end
+    end
 
-    if owned and nearMe and (moving or maybeAnchoredShot) then
+    -- 1) Explicitly owned projectile near us
+    if owned and nearMe and (moving or (part.Anchored and fireWin and nameHit)) and inFront then
         return true
     end
 
-    -- While holding launcher / just fired: accept small new parts near you even with generic names
-    if State.LauncherAssist and (launcher or fireWin) and nearMe then
-        if moving and size.Magnitude <= 8 then
+    -- 2) Clear projectile name + moving fast
+    if nameHit and moving and distMe < 100 and inFront then
+        return true
+    end
+
+    -- 3) Launcher fire window ONLY: brand-new FAST part that just spawned near muzzle
+    --    Requires fire window + launcher equipped + high speed + small size + in front
+    if State.LauncherAssist and launcher and fireWin and nearMe and inFront then
+        if moving and size.Magnitude <= 4 and not part.Anchored then
             return true
         end
-        if maybeAnchoredShot and size.Magnitude <= 8 then
+        -- anchored CFrame projectile with projectile-like name only
+        if part.Anchored and nameHit and size.Magnitude <= 4 then
             return true
-        end
-        -- brand-new unanchored part in front of camera
-        if not part.Anchored and distMe < 55 and size.Magnitude <= 6 then
-            if cam then
-                local look = cam.CFrame.LookVector
-                local toPart = (part.Position - cam.CFrame.Position)
-                if toPart.Magnitude > 1 and look:Dot(toPart.Unit) > 0.25 then
-                    return true
-                end
-            end
         end
     end
 
-    if State.OnlyMyThrowables then
-        if nameHit and nearMe and (moving or maybeAnchoredShot) then
-            return true
-        end
-        if nameHit and moving and distMe < 100 then
-            return true
-        end
-        return false
-    end
-
-    return (nameHit or moving) and size.Magnitude < 10 and distMe < 120
+    return false
 end
 
 local function SetMoverVelocity(part, vel)
@@ -541,19 +571,21 @@ local function ScanWorkspaceForThrowables()
     local cam = Workspace.CurrentCamera
     if not myHRP and not cam then return end
     local origin = myHRP and myHRP.Position or cam.CFrame.Position
-    local radius = (HoldingLauncherTool() or InFireWindow()) and 90 or 50
+    -- Only scan near muzzle during/after fire — never vacuum the whole map
+    if not (HoldingLauncherTool() or InFireWindow()) then
+        return
+    end
+    local radius = 30
 
-    local roots = { Workspace }
+    local roots = {}
     for _, name in ipairs(PROJECTILE_FOLDERS) do
         local f = Workspace:FindFirstChild(name)
         if f then table.insert(roots, f) end
     end
-    -- also scan a few direct folder children with projectile-ish names
-    for _, child in ipairs(Workspace:GetChildren()) do
-        if (child:IsA("Folder") or child:IsA("Model")) and NameLooksThrowable(child.Name) then
-            table.insert(roots, child)
-        end
-    end
+
+    -- During fire window, also check direct Workspace children that look like projectiles
+    -- (NOT every prop — only name match or very fast small parts)
+    table.insert(roots, Workspace)
 
     for _, root in ipairs(roots) do
         local ok, children = pcall(function() return root:GetChildren() end)
@@ -563,19 +595,24 @@ local function ScanWorkspaceForThrowables()
                     if (inst.Position - origin).Magnitude < radius then
                         TryTrack(inst)
                     end
-                elseif inst:IsA("Model") then
-                    local pp = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart", true)
+                elseif inst:IsA("Model") and not Players:GetPlayerFromCharacter(inst) then
+                    local pp = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart")
                     if pp and (pp.Position - origin).Magnitude < radius then
-                        TryTrackModel(inst)
+                        -- only models that look like projectiles or are moving fast
+                        if NameLooksThrowable(inst.Name) or GetPartSpeed(pp) >= 25 then
+                            TryTrackModel(inst)
+                        end
                     end
                 elseif inst:IsA("Folder") then
                     for _, d in ipairs(inst:GetChildren()) do
                         if d:IsA("BasePart") and (d.Position - origin).Magnitude < radius then
                             TryTrack(d)
                         elseif d:IsA("Model") then
-                            local p2 = d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart", true)
+                            local p2 = d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart")
                             if p2 and (p2.Position - origin).Magnitude < radius then
-                                TryTrackModel(d)
+                                if NameLooksThrowable(d.Name) or GetPartSpeed(p2) >= 25 then
+                                    TryTrackModel(d)
+                                end
                             end
                         end
                     end
@@ -601,17 +638,16 @@ local function StartMagnet()
         end)
     end))
 
-    -- When player activates tool (snowball launcher fire)
+    -- When player fires while holding a real launcher tool only
     Bind("MagnetTool", UserInputService.InputBegan:Connect(function(input, gp)
         if not State.MagnetEnabled or gp then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch
             or input.KeyCode == Enum.KeyCode.ButtonR2 then
-            if HoldingLauncherTool() or State.LauncherAssist then
-                OpenFireWindow(1.5)
-                -- aggressive short scan after fire
+            if HoldingLauncherTool() then
+                OpenFireWindow(0.8)
                 task.spawn(function()
-                    for _ = 1, 12 do
+                    for _ = 1, 10 do
                         if not State.MagnetEnabled then break end
                         pcall(ScanWorkspaceForThrowables)
                         task.wait(0.03)
@@ -628,9 +664,10 @@ local function StartMagnet()
         tool:SetAttribute("GuysModzHooked", true)
         tool.Activated:Connect(function()
             if not State.MagnetEnabled then return end
-            OpenFireWindow(1.5)
+            if not NameLooksLauncher(tool.Name) then return end
+            OpenFireWindow(0.8)
             task.spawn(function()
-                for _ = 1, 12 do
+                for _ = 1, 10 do
                     pcall(ScanWorkspaceForThrowables)
                     task.wait(0.03)
                 end
@@ -820,7 +857,7 @@ local ThrowTab = Window:CreateTab("Throwables")
 ThrowTab:CreateLabel("Snowball Launcher Magnet")
 ThrowTab:CreateBadge("Launcher", Color3.fromRGB(100, 180, 255))
 ThrowTab:CreateRichLabel(
-    "<font color=\"rgb(180,180,200)\">v3.2 detects snowball <b>launcher</b> shots better:\n• hooks tool fire\n• tracks anchored + velocity projectiles\n• wider name / folder scan\n\nWatch <b>Tracking</b> and <b>Last:</b> when you shoot.</font>"
+    "<font color=\"rgb(180,180,200)\">v3.3 is <b>prop-safe</b>:\n• ignores chairs, food, boxes, map parts\n• only tracks fast projectiles after launcher fire\n• requires snowball launcher equipped\n\nWatch <b>Tracking</b> / <b>Last:</b> when you shoot.</font>"
 )
 
 ThrowTab:CreateSeparator()
@@ -981,7 +1018,7 @@ SettingsTab:CreateDropdown("Theme", {"Dark", "Midnight", "BloodRed", "Green", "P
 end)
 
 SettingsTab:CreateSeparator()
-SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v3.2</b>\nSnowball Launcher Magnet\nPress RightShift to toggle UI.")
+SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v3.3</b>\nProp-safe Snowball Launcher Magnet\nPress RightShift to toggle UI.")
 
 SettingsTab:CreateButton("Destroy UI", function()
     Library:CreateConfirmationDialog("Destroy UI", "Close the hub?", function()
@@ -999,4 +1036,4 @@ end)
 --═══════════════════════════════════════════════════════════════
 Window:BindToggleKey(Enum.KeyCode.RightShift)
 
-Library:Notify("GuysModz Baddies", "v3.2 — snowball launcher magnet ready. RightShift toggles UI.")
+Library:Notify("GuysModz Baddies", "v3.3 — magnet won't grab chairs/food. RightShift toggles UI.")
