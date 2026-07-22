@@ -1,7 +1,7 @@
 --[[
     ═══════════════════════════════════════════════════════════════
-     GuysModz Hub — Baddies Edition v3.1
-     Throwable Magnet (safe — no player fling)
+     GuysModz Hub — Baddies Edition v3.2
+     Snowball Launcher Magnet
      
      Usage:
        loadstring(game:HttpGet("https://raw.githubusercontent.com/GuysServices/uilibtesting/main/baddiesscript.lua"))()
@@ -25,7 +25,7 @@ local Camera = Workspace.CurrentCamera
 Library:CreateLoadingScreen("Loading GuysModz Baddies Hub...", 1.0)
 task.wait(1.0)
 
-local Watermark = Library:CreateWatermark("GuysModz Baddies v3.1")
+local Watermark = Library:CreateWatermark("GuysModz Baddies v3.2")
 local StatsDisplay = Library:CreateStatsDisplay()
 local Window = Library:CreateWindow("GuysModz | Baddies")
 
@@ -59,12 +59,14 @@ end)
 local State = {
     -- Throwable magnet
     MagnetEnabled = false,
-    MagnetRange = 80,       -- how far a throwable can snap to a target
-    MagnetStrength = 0.55,  -- soft redirect (hard lock flings people)
+    MagnetRange = 120,      -- snowball launchers need longer range
+    MagnetStrength = 0.7,   -- stronger home for launcher projectiles
     TargetPart = "HumanoidRootPart", -- Head / HumanoidRootPart / UpperTorso
     TeamCheck = false,
     OnlyMyThrowables = true,
-    MaxTrackTime = 4,       -- seconds to keep steering a projectile
+    MaxTrackTime = 6,       -- seconds to keep steering a projectile
+    LauncherAssist = true,  -- extra detection while holding snowball launcher
+    DebugTrack = true,      -- show last tracked projectile name
 
     -- Optional body expand (melee only — does NOT help server throwables)
     ExpandHitbox = false,
@@ -131,14 +133,33 @@ end
 -- Client body-size expand does NOT work when Baddies validates throws
 -- on the server. Instead we steer YOUR projectiles toward enemies.
 --═══════════════════════════════════════════════════════════════
-local Tracked = {} -- [BasePart] = { start = tick(), targetPart = BasePart? }
+local Tracked = {} -- [BasePart] = data
 local StatusLabel
+local LastTrackedName = "none"
+local FireWindowUntil = 0 -- after launcher fire, accept nearby new parts briefly
+local SeenParts = {} -- weak-ish set of parts we already evaluated this session
+local UserInputService = game:GetService("UserInputService")
 
 local THROWABLE_NAME_HINTS = {
-    "snow", "ball", "throw", "projectile", "rock", "brick", "bottle",
-    "can", "knife", "shuriken", "grenade", "bomb", "egg", "tomato",
-    "bullet", "missile", "rocket", "dart", "arrow", "orb", "sphere",
-    "obj", "item", "weapon", "tool", "ammo", "proj",
+    -- snowball launcher specific
+    "snow", "snowball", "launcher", "sball", "sb_", "ice", "frozen",
+    -- generic projectiles
+    "ball", "throw", "projectile", "proj", "missile", "rocket", "bullet",
+    "dart", "arrow", "orb", "sphere", "pellet", "shot", "blast", "cast",
+    "ammo", "round", "slug", "bolt", "flare", "shell",
+    -- common generic instance names used by games
+    "handle", "tip", "head", "mesh", "part",
+}
+
+local LAUNCHER_TOOL_HINTS = {
+    "snow", "launcher", "ball", "throw", "gun", "cannon", "blaster", "shooter",
+}
+
+local PROJECTILE_FOLDERS = {
+    "Projectiles", "Thrown", "Throwables", "Effects", "Debris", "Ignore",
+    "Bullets", "Missiles", "Snowballs", "Snowball", "Launcher", "Weapons",
+    "ClientProjectiles", "ServerProjectiles", "FX", "VFX", "Temporary",
+    "WorkspaceProjectiles", "Active", "Runtime",
 }
 
 local function NameLooksThrowable(name)
@@ -152,23 +173,61 @@ local function NameLooksThrowable(name)
     return false
 end
 
+local function NameLooksLauncher(name)
+    if not name then return false end
+    local lower = string.lower(name)
+    for _, hint in ipairs(LAUNCHER_TOOL_HINTS) do
+        if string.find(lower, hint, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
 local function IsDescendantOfLocalCharacter(inst)
     local char = LocalPlayer.Character
-    return char and inst:IsDescendantOf(char)
+    return char and inst and inst:IsDescendantOf(char)
 end
 
 local function IsPlayerCharacterPart(inst)
     if not inst then return false end
     local model = inst:FindFirstAncestorOfClass("Model")
     if not model then return false end
-    -- Any model that is a player's Character must never be steered
     if Players:GetPlayerFromCharacter(model) then
         return true
     end
+    -- Character-like models (NPCs) — still don't fling
     if model:FindFirstChildOfClass("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
         return true
     end
     return false
+end
+
+local function GetEquippedTool()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    return char:FindFirstChildOfClass("Tool")
+end
+
+local function HoldingLauncherTool()
+    local tool = GetEquippedTool()
+    if not tool then return false end
+    if NameLooksLauncher(tool.Name) then return true end
+    -- also check attributes / child names
+    for _, d in ipairs(tool:GetDescendants()) do
+        if NameLooksLauncher(d.Name) then
+            return true
+        end
+    end
+    return false
+end
+
+local function InFireWindow()
+    return tick() < FireWindowUntil
+end
+
+local function OpenFireWindow(seconds)
+    FireWindowUntil = math.max(FireWindowUntil, tick() + (seconds or 1.25))
 end
 
 local function OwnedByLocalPlayer(inst)
@@ -176,193 +235,349 @@ local function OwnedByLocalPlayer(inst)
         return false
     end
 
-    local ok, val
+    local checks = { inst }
+    if inst.Parent then table.insert(checks, inst.Parent) end
+    if inst.Parent and inst.Parent.Parent then table.insert(checks, inst.Parent.Parent) end
 
-    ok, val = pcall(function() return inst:GetAttribute("Owner") end)
-    if ok and val ~= nil then
-        if val == LocalPlayer.UserId or val == LocalPlayer.Name or val == tostring(LocalPlayer.UserId) then
-            return true
-        end
-        if typeof(val) == "Instance" and val == LocalPlayer then
-            return true
-        end
-    end
+    for _, node in ipairs(checks) do
+        local ok, val
 
-    ok, val = pcall(function() return inst:GetAttribute("OwnerId") end)
-    if ok and (val == LocalPlayer.UserId or val == tostring(LocalPlayer.UserId)) then
-        return true
-    end
-
-    ok, val = pcall(function() return inst:GetAttribute("UserId") end)
-    if ok and (val == LocalPlayer.UserId or val == tostring(LocalPlayer.UserId)) then
-        return true
-    end
-
-    -- ObjectValues / StringValues (nil-safe)
-    for _, childName in ipairs({ "Owner", "Creator", "Player", "Thrower" }) do
-        local okChild, v = pcall(function()
-            return inst:FindFirstChild(childName)
-        end)
-        if okChild and v then
-            if v:IsA("ObjectValue") and v.Value == LocalPlayer then
+        ok, val = pcall(function() return node:GetAttribute("Owner") end)
+        if ok and val ~= nil then
+            if val == LocalPlayer.UserId or val == LocalPlayer.Name or val == tostring(LocalPlayer.UserId) then
                 return true
             end
-            if v:IsA("StringValue") and (v.Value == LocalPlayer.Name or v.Value == tostring(LocalPlayer.UserId)) then
-                return true
-            end
-            if v:IsA("IntValue") and v.Value == LocalPlayer.UserId then
+            if typeof(val) == "Instance" and (val == LocalPlayer or val == LocalPlayer.Character) then
                 return true
             end
         end
-    end
 
-    local okCreator, creator = pcall(function()
-        return inst:FindFirstChild("creator") or inst:FindFirstChild("Creator")
-    end)
-    if okCreator and creator and creator:IsA("ObjectValue") and creator.Value == LocalPlayer then
-        return true
+        for _, attr in ipairs({ "OwnerId", "UserId", "ThrowerId", "Shooter", "CreatorId" }) do
+            ok, val = pcall(function() return node:GetAttribute(attr) end)
+            if ok and (val == LocalPlayer.UserId or val == tostring(LocalPlayer.UserId) or val == LocalPlayer.Name) then
+                return true
+            end
+        end
+
+        for _, childName in ipairs({ "Owner", "Creator", "Player", "Thrower", "Shooter", "creator" }) do
+            local okChild, v = pcall(function() return node:FindFirstChild(childName) end)
+            if okChild and v then
+                if v:IsA("ObjectValue") and (v.Value == LocalPlayer or v.Value == LocalPlayer.Character) then
+                    return true
+                end
+                if v:IsA("StringValue") and (v.Value == LocalPlayer.Name or v.Value == tostring(LocalPlayer.UserId)) then
+                    return true
+                end
+                if v:IsA("IntValue") and v.Value == LocalPlayer.UserId then
+                    return true
+                end
+            end
+        end
     end
 
     return false
 end
 
-local function IsLikelyThrowable(part)
-    if not part or typeof(part) ~= "Instance" then return false end
-    if not part:IsA("BasePart") then return false end
-    if not part.Parent then return false end
-    if part.Anchored then return false end
-
-    -- CRITICAL: never touch player characters (this was flinging your friend)
-    if IsDescendantOfLocalCharacter(part) then return false end
-    if IsPlayerCharacterPart(part) then return false end
-
-    -- Never track accessories / clothes / tools on characters
-    if part:FindFirstAncestorOfClass("Accessory") then return false end
-    if part:FindFirstAncestorOfClass("Tool") and IsPlayerCharacterPart(part:FindFirstAncestorOfClass("Tool").Parent) then
-        return false
-    end
-
-    local size = part.Size
-    if size.X > 8 or size.Y > 8 or size.Z > 8 then return false end
-    if size.Magnitude < 0.05 or size.Magnitude > 10 then return false end
-
+local function GetPartSpeed(part)
     local speed = 0
     pcall(function()
         speed = part.AssemblyLinearVelocity.Magnitude
     end)
+    if speed < 1 then
+        -- BodyVelocity / LinearVelocity constraints (older + newer projectile systems)
+        pcall(function()
+            for _, d in ipairs(part:GetDescendants()) do
+                if d:IsA("BodyVelocity") then
+                    speed = math.max(speed, d.Velocity.Magnitude)
+                elseif d.ClassName == "LinearVelocity" then
+                    local v = d.VectorVelocity
+                    if typeof(v) == "Vector3" then
+                        speed = math.max(speed, v.Magnitude)
+                    end
+                elseif d:IsA("VectorForce") then
+                    speed = math.max(speed, 30) -- treat as propelled
+                end
+            end
+        end)
+        -- parent-level movers
+        pcall(function()
+            local p = part.Parent
+            if p then
+                for _, d in ipairs(p:GetChildren()) do
+                    if d:IsA("BodyVelocity") then
+                        speed = math.max(speed, d.Velocity.Magnitude)
+                    end
+                end
+            end
+        end)
+    end
+    return speed
+end
 
-    -- Real throwables are moving. Stationary body parts are not.
-    if speed < 8 then return false end
+local function IsSafeProjectileCandidate(part)
+    if not part or typeof(part) ~= "Instance" then return false end
+    if not part:IsA("BasePart") then return false end
+    if not part.Parent then return false end
 
-    local myHRP = GetHRP()
-    local nearMe = false
-    if myHRP then
-        nearMe = (part.Position - myHRP.Position).Magnitude < 30
+    -- never touch characters / accessories / backpack tools on people
+    if IsDescendantOfLocalCharacter(part) then return false end
+    if IsPlayerCharacterPart(part) then return false end
+    if part:FindFirstAncestorOfClass("Accessory") then return false end
+
+    local toolAnc = part:FindFirstAncestorOfClass("Tool")
+    if toolAnc then
+        -- tool still equipped on someone = not a free projectile
+        local toolParent = toolAnc.Parent
+        if toolParent and (toolParent:IsA("Model") and Players:GetPlayerFromCharacter(toolParent)) then
+            return false
+        end
+        if toolParent and toolParent:IsA("Backpack") then
+            return false
+        end
     end
 
+    -- skip terrain-sized junk
+    local size = part.Size
+    if size.X > 10 or size.Y > 10 or size.Z > 10 then return false end
+    if size.Magnitude < 0.04 or size.Magnitude > 14 then return false end
+
+    return true
+end
+
+local function IsLikelyThrowable(part)
+    if not IsSafeProjectileCandidate(part) then return false end
+
+    local size = part.Size
+    local speed = GetPartSpeed(part)
+    local myHRP = GetHRP()
+    local cam = Workspace.CurrentCamera
+    local origin = myHRP and myHRP.Position or (cam and cam.CFrame.Position)
+    if not origin then return false end
+
+    local distMe = (part.Position - origin).Magnitude
     local parent = part.Parent
     local owned = OwnedByLocalPlayer(part) or (parent and OwnedByLocalPlayer(parent)) or false
     local nameHit = NameLooksThrowable(part.Name)
         or (parent and NameLooksThrowable(parent.Name))
+        or (parent and parent.Parent and NameLooksThrowable(parent.Parent.Name))
         or false
 
-    -- Must look like a projectile OR be explicitly owned by us
-    if owned and nearMe and speed > 8 then
+    local launcher = HoldingLauncherTool()
+    local fireWin = InFireWindow()
+    local nearMe = distMe < (launcher and 80 or 45)
+
+    -- Anchored snowballs (CFrame/FastCast style) have 0 velocity — still valid during fire window
+    local moving = speed >= 6
+    local maybeAnchoredShot = part.Anchored and (nameHit or fireWin or launcher) and nearMe
+
+    if owned and nearMe and (moving or maybeAnchoredShot) then
         return true
     end
 
-    if State.OnlyMyThrowables then
-        if nameHit and nearMe and speed > 12 then
+    -- While holding launcher / just fired: accept small new parts near you even with generic names
+    if State.LauncherAssist and (launcher or fireWin) and nearMe then
+        if moving and size.Magnitude <= 8 then
             return true
         end
-        -- Fast small part that just left near the local player (common for untagged throws)
-        if nearMe and speed > 40 and size.Magnitude <= 5 and nameHit then
+        if maybeAnchoredShot and size.Magnitude <= 8 then
+            return true
+        end
+        -- brand-new unanchored part in front of camera
+        if not part.Anchored and distMe < 55 and size.Magnitude <= 6 then
+            if cam then
+                local look = cam.CFrame.LookVector
+                local toPart = (part.Position - cam.CFrame.Position)
+                if toPart.Magnitude > 1 and look:Dot(toPart.Unit) > 0.25 then
+                    return true
+                end
+            end
+        end
+    end
+
+    if State.OnlyMyThrowables then
+        if nameHit and nearMe and (moving or maybeAnchoredShot) then
+            return true
+        end
+        if nameHit and moving and distMe < 100 then
             return true
         end
         return false
     end
 
-    return nameHit and speed > 15 and size.Magnitude < 8
+    return (nameHit or moving) and size.Magnitude < 10 and distMe < 120
 end
 
-local function SteerProjectile(part, targetPart)
-    -- Safety: never steer character parts
+local function SetMoverVelocity(part, vel)
+    -- Prefer constraint movers if present; else AssemblyLinearVelocity
+    local set = false
+    pcall(function()
+        for _, d in ipairs(part:GetDescendants()) do
+            if d:IsA("BodyVelocity") then
+                d.Velocity = vel
+                set = true
+            elseif d.ClassName == "LinearVelocity" then
+                pcall(function() d.VectorVelocity = vel end)
+                set = true
+            end
+        end
+        local p = part.Parent
+        if p then
+            for _, d in ipairs(p:GetChildren()) do
+                if d:IsA("BodyVelocity") then
+                    d.Velocity = vel
+                    set = true
+                end
+            end
+        end
+    end)
+    if not set then
+        pcall(function()
+            part.AssemblyLinearVelocity = vel
+        end)
+    end
+end
+
+local function SteerProjectile(part, data, targetPart)
     if not part or not part.Parent or not targetPart or not targetPart.Parent then return end
     if IsPlayerCharacterPart(part) then return end
+    if not IsSafeProjectileCandidate(part) then return end
 
     local targetPos = targetPart.Position
     pcall(function()
         local vel = targetPart.AssemblyLinearVelocity
-        targetPos = targetPos + vel * 0.06
+        targetPos = targetPos + vel * 0.08
     end)
 
     local pos = part.Position
     local toTarget = targetPos - pos
     local dist = toTarget.Magnitude
-    if dist < 0.25 or dist > State.MagnetRange then return end
+    if dist < 0.2 or dist > State.MagnetRange then return end
 
     local dir = toTarget.Unit
+    local strength = math.clamp(State.MagnetStrength, 0.2, 0.95)
 
-    -- Keep existing speed; only redirect direction (no hard CFrame snap = no fling)
-    local speed = 60
-    pcall(function()
-        local v = part.AssemblyLinearVelocity.Magnitude
-        if v > 15 then
-            speed = v
+    -- Track last position to estimate speed for anchored projectiles
+    local lastPos = data.lastPos or pos
+    local dt = data._dt or (1/60)
+    local measured = (pos - lastPos).Magnitude / math.max(dt, 1/240)
+    data.lastPos = pos
+
+    local speed = GetPartSpeed(part)
+    if speed < 10 then
+        speed = math.max(measured, 70) -- launcher snowballs are usually fast
+    end
+
+    if part.Anchored then
+        -- CFrame-based projectiles (common for launcher systems)
+        -- Soft step toward target — NOT a full snap onto the player (avoids fling)
+        local step = math.clamp(speed * dt * (0.6 + strength), 1, 18)
+        local newPos = pos:Lerp(pos + dir * step, 1)
+        -- blend current forward with to-target so path curves in
+        local look = pos + dir
+        pcall(function()
+            part.CFrame = CFrame.new(newPos, look)
+        end)
+    else
+        local current = Vector3.zero
+        pcall(function() current = part.AssemblyLinearVelocity end)
+        if current.Magnitude < 5 and measured > 5 then
+            current = (pos - lastPos) / math.max(dt, 1/240)
         end
-    end)
-
-    local strength = math.clamp(State.MagnetStrength, 0.15, 0.85) -- cap so it's not violent
-    local desired = dir * speed
-    local current = Vector3.zero
-    pcall(function() current = part.AssemblyLinearVelocity end)
-
-    local newVel = current:Lerp(desired, strength)
-    pcall(function()
-        part.AssemblyLinearVelocity = newVel
-        -- NO CFrame writes, NO position snaps — those fling welded/character parts
-    end)
+        local desired = dir * math.max(speed, 50)
+        local newVel = current:Lerp(desired, strength)
+        SetMoverVelocity(part, newVel)
+    end
 end
 
 local function TryTrack(part)
     if not State.MagnetEnabled then return end
     if not part or typeof(part) ~= "Instance" then return end
     if Tracked[part] then return end
+    if SeenParts[part] and not InFireWindow() then
+        -- still allow recheck during fire window
+    end
     if IsPlayerCharacterPart(part) then return end
-    if not IsLikelyThrowable(part) then return end
+    if not IsLikelyThrowable(part) then
+        SeenParts[part] = true
+        return
+    end
 
     local fromPos = part.Position
     local _, targetPart = GetClosestTarget(fromPos, State.MagnetRange)
     Tracked[part] = {
         start = tick(),
         targetPart = targetPart,
+        lastPos = fromPos,
+        _dt = 1/60,
+        name = part.Name,
     }
+    LastTrackedName = part.Name .. (part.Parent and ("/" .. part.Parent.Name) or "")
+    SeenParts[part] = true
+end
+
+local function TryTrackModel(model)
+    if not model then return end
+    if IsPlayerCharacterPart(model) then return end
+    -- Prefer PrimaryPart / largest small part
+    local best, bestScore = nil, -1
+    for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA("BasePart") and IsSafeProjectileCandidate(d) then
+            local score = 1
+            if model.PrimaryPart == d then score = score + 5 end
+            if NameLooksThrowable(d.Name) then score = score + 3 end
+            local sp = GetPartSpeed(d)
+            score = score + math.min(sp / 20, 3)
+            if score > bestScore then
+                bestScore = score
+                best = d
+            end
+        end
+    end
+    if best then TryTrack(best) end
 end
 
 local function ScanWorkspaceForThrowables()
-    -- Lightweight periodic scan + DescendantAdded handles most cases
     local myHRP = GetHRP()
-    if not myHRP then return end
-    local origin = myHRP.Position
+    local cam = Workspace.CurrentCamera
+    if not myHRP and not cam then return end
+    local origin = myHRP and myHRP.Position or cam.CFrame.Position
+    local radius = (HoldingLauncherTool() or InFireWindow()) and 90 or 50
 
-    -- Check direct children of Workspace and a few common folders
     local roots = { Workspace }
-    for _, name in ipairs({ "Projectiles", "Thrown", "Throwables", "Effects", "Debris", "Ignore", "Bullets", "Missiles" }) do
+    for _, name in ipairs(PROJECTILE_FOLDERS) do
         local f = Workspace:FindFirstChild(name)
         if f then table.insert(roots, f) end
     end
+    -- also scan a few direct folder children with projectile-ish names
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if (child:IsA("Folder") or child:IsA("Model")) and NameLooksThrowable(child.Name) then
+            table.insert(roots, child)
+        end
+    end
 
     for _, root in ipairs(roots) do
-        for _, inst in ipairs(root:GetChildren()) do
-            if inst:IsA("BasePart") then
-                if (inst.Position - origin).Magnitude < 40 then
-                    TryTrack(inst)
-                end
-            elseif inst:IsA("Model") or inst:IsA("Folder") then
-                for _, d in ipairs(inst:GetDescendants()) do
-                    if d:IsA("BasePart") and (d.Position - origin).Magnitude < 40 then
-                        TryTrack(d)
-                        break -- one primary part per model is enough
+        local ok, children = pcall(function() return root:GetChildren() end)
+        if ok and children then
+            for _, inst in ipairs(children) do
+                if inst:IsA("BasePart") then
+                    if (inst.Position - origin).Magnitude < radius then
+                        TryTrack(inst)
+                    end
+                elseif inst:IsA("Model") then
+                    local pp = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart", true)
+                    if pp and (pp.Position - origin).Magnitude < radius then
+                        TryTrackModel(inst)
+                    end
+                elseif inst:IsA("Folder") then
+                    for _, d in ipairs(inst:GetChildren()) do
+                        if d:IsA("BasePart") and (d.Position - origin).Magnitude < radius then
+                            TryTrack(d)
+                        elseif d:IsA("Model") then
+                            local p2 = d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart", true)
+                            if p2 and (p2.Position - origin).Magnitude < radius then
+                                TryTrackModel(d)
+                            end
+                        end
                     end
                 end
             end
@@ -371,36 +586,102 @@ local function ScanWorkspaceForThrowables()
 end
 
 local function StartMagnet()
-    -- Catch new instances
+    -- New instances anywhere under Workspace
     Bind("MagnetAdded", Workspace.DescendantAdded:Connect(function(inst)
         if not State.MagnetEnabled then return end
-        if inst:IsA("BasePart") then
-            task.defer(function()
-                -- wait a frame so velocity/owner attrs exist
-                task.wait()
+        task.defer(function()
+            -- wait a couple frames so velocity/owner/name settle
+            task.wait()
+            task.wait()
+            if inst:IsA("BasePart") then
                 TryTrack(inst)
-            end)
+            elseif inst:IsA("Model") then
+                TryTrackModel(inst)
+            end
+        end)
+    end))
+
+    -- When player activates tool (snowball launcher fire)
+    Bind("MagnetTool", UserInputService.InputBegan:Connect(function(input, gp)
+        if not State.MagnetEnabled or gp then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+            or input.KeyCode == Enum.KeyCode.ButtonR2 then
+            if HoldingLauncherTool() or State.LauncherAssist then
+                OpenFireWindow(1.5)
+                -- aggressive short scan after fire
+                task.spawn(function()
+                    for _ = 1, 12 do
+                        if not State.MagnetEnabled then break end
+                        pcall(ScanWorkspaceForThrowables)
+                        task.wait(0.03)
+                    end
+                end)
+            end
         end
     end))
 
+    -- Also hook Tool.Activated if available
+    local function HookTool(tool)
+        if not tool or not tool:IsA("Tool") then return end
+        if tool:GetAttribute("GuysModzHooked") then return end
+        tool:SetAttribute("GuysModzHooked", true)
+        tool.Activated:Connect(function()
+            if not State.MagnetEnabled then return end
+            OpenFireWindow(1.5)
+            task.spawn(function()
+                for _ = 1, 12 do
+                    pcall(ScanWorkspaceForThrowables)
+                    task.wait(0.03)
+                end
+            end)
+        end)
+    end
+
+    local function HookCharacter(char)
+        if not char then return end
+        for _, c in ipairs(char:GetChildren()) do
+            if c:IsA("Tool") then HookTool(c) end
+        end
+        char.ChildAdded:Connect(function(c)
+            if c:IsA("Tool") then HookTool(c) end
+        end)
+    end
+
+    if LocalPlayer.Character then HookCharacter(LocalPlayer.Character) end
+    Bind("MagnetChar", LocalPlayer.CharacterAdded:Connect(HookCharacter))
+
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, t in ipairs(backpack:GetChildren()) do
+            if t:IsA("Tool") then HookTool(t) end
+        end
+        Bind("MagnetBag", backpack.ChildAdded:Connect(function(c)
+            if c:IsA("Tool") then HookTool(c) end
+        end))
+    end
+
     -- Steer loop
+    local last = tick()
     Bind("Magnet", RunService.Heartbeat:Connect(function()
         if not State.MagnetEnabled then return end
 
-        local trackedCount = 0
         local now = tick()
+        local dt = math.clamp(now - last, 1/240, 0.05)
+        last = now
+
+        local trackedCount = 0
 
         for part, data in pairs(Tracked) do
             if not part or not part.Parent then
                 Tracked[part] = nil
-            elseif IsPlayerCharacterPart(part) then
-                -- Never keep steering a character part
+            elseif IsPlayerCharacterPart(part) or not IsSafeProjectileCandidate(part) then
                 Tracked[part] = nil
             elseif (now - data.start) > State.MaxTrackTime then
                 Tracked[part] = nil
             else
                 trackedCount += 1
-                -- refresh target if lost
+                data._dt = dt
                 local t = data.targetPart
                 if not t or not t.Parent then
                     local _, newT = GetClosestTarget(part.Position, State.MagnetRange)
@@ -408,31 +689,40 @@ local function StartMagnet()
                     t = newT
                 end
                 if t then
-                    -- retarget if much closer enemy exists
                     local _, closer, dist = GetClosestTarget(part.Position, State.MagnetRange)
                     if closer and dist + 2 < (t.Position - part.Position).Magnitude then
                         data.targetPart = closer
                         t = closer
                     end
-                    pcall(SteerProjectile, part, t)
+                    pcall(SteerProjectile, part, data, t)
                 end
             end
         end
 
         if StatusLabel then
+            local launcher = HoldingLauncherTool()
+            local fire = InFireWindow()
+            local extra = ""
+            if State.DebugTrack then
+                extra = string.format("  |  Last: <font color=\"rgb(200,200,120)\">%s</font>", LastTrackedName)
+            end
             StatusLabel.Set(string.format(
-                "<b>Magnet:</b> <font color=\"rgb(80,200,120)\">ON</font>  |  Tracking: <font color=\"rgb(100,180,255)\">%d</font>  |  Range: %d",
-                trackedCount, State.MagnetRange
+                "<b>Magnet:</b> <font color=\"rgb(80,200,120)\">ON</font>  |  Tracking: <font color=\"rgb(100,180,255)\">%d</font>  |  Launcher: %s%s%s",
+                trackedCount,
+                launcher and "<font color=\"rgb(80,200,120)\">YES</font>" or "no",
+                fire and "  |  <font color=\"rgb(255,200,80)\">FIRE</font>" or "",
+                extra
             ))
         end
     end))
 
-    -- Backup scan for projectiles DescendantAdded may miss
+    -- Backup scan
     local lastScan = 0
     Bind("MagnetScan", RunService.Heartbeat:Connect(function()
         if not State.MagnetEnabled then return end
         local t = tick()
-        if t - lastScan < 0.15 then return end
+        local interval = (HoldingLauncherTool() or InFireWindow()) and 0.05 or 0.12
+        if t - lastScan < interval then return end
         lastScan = t
         pcall(ScanWorkspaceForThrowables)
     end))
@@ -442,7 +732,11 @@ local function StopMagnet()
     Unbind("Magnet")
     Unbind("MagnetAdded")
     Unbind("MagnetScan")
+    Unbind("MagnetTool")
+    Unbind("MagnetChar")
+    Unbind("MagnetBag")
     Tracked = {}
+    FireWindowUntil = 0
     if StatusLabel then
         StatusLabel.Set("<b>Magnet:</b> <font color=\"rgb(255,80,80)\">OFF</font>  |  Tracking: 0")
     end
@@ -523,10 +817,10 @@ end
 --═══════════════════════════════════════════════════════════════
 local ThrowTab = Window:CreateTab("Throwables")
 
-ThrowTab:CreateLabel("Throwable Magnet")
-ThrowTab:CreateBadge("Homing", Color3.fromRGB(100, 180, 255))
+ThrowTab:CreateLabel("Snowball Launcher Magnet")
+ThrowTab:CreateBadge("Launcher", Color3.fromRGB(100, 180, 255))
 ThrowTab:CreateRichLabel(
-    "<font color=\"rgb(180,180,200)\">Body hitbox expand usually <b>cannot</b> fix throwables if Baddies checks hits on the server.\nThis magnet steers <b>your</b> throwables toward the nearest player instead.</font>"
+    "<font color=\"rgb(180,180,200)\">v3.2 detects snowball <b>launcher</b> shots better:\n• hooks tool fire\n• tracks anchored + velocity projectiles\n• wider name / folder scan\n\nWatch <b>Tracking</b> and <b>Last:</b> when you shoot.</font>"
 )
 
 ThrowTab:CreateSeparator()
@@ -537,28 +831,36 @@ ThrowTab:CreateToggle("Throwable Magnet", false, function(state)
     State.MagnetEnabled = state
     if state then
         StartMagnet()
-        Library:Notify("Throwables", "Magnet ON — throw something at a player")
+        Library:Notify("Throwables", "Magnet ON — equip snowball launcher and shoot")
     else
         StopMagnet()
         Library:Notify("Throwables", "Magnet OFF")
     end
-end, "Home your throwables onto nearby players")
+end, "Home launcher snowballs onto nearby players")
 
-ThrowTab:CreateSlider("Magnet Range", 20, 200, 80, function(value)
+ThrowTab:CreateToggle("Launcher Assist", true, function(state)
+    State.LauncherAssist = state
+end, "While holding launcher / after fire, grab nearby new projectiles")
+
+ThrowTab:CreateSlider("Magnet Range", 30, 250, 120, function(value)
     State.MagnetRange = value
-end, "How far throwables will lock onto someone")
+end, "How far snowballs will lock onto someone")
 
-ThrowTab:CreateSlider("Magnet Strength", 0.2, 0.85, 0.55, function(value)
+ThrowTab:CreateSlider("Magnet Strength", 0.2, 0.95, 0.7, function(value)
     State.MagnetStrength = value
-end, "Higher = stronger home (keep mid to avoid weird physics)", 2)
+end, "Higher = stronger home", 2)
 
 ThrowTab:CreateDropdown("Target Part", {"HumanoidRootPart", "Head", "UpperTorso", "Torso"}, "HumanoidRootPart", function(selected)
     State.TargetPart = selected
-end, "Where throwables home to")
+end, "Where snowballs home to")
 
 ThrowTab:CreateToggle("Only My Throwables", true, function(state)
     State.OnlyMyThrowables = state
-end, "Only steer projectiles that look like yours")
+end, "Prefer projectiles that look like yours (keep ON)")
+
+ThrowTab:CreateToggle("Show Last Tracked", true, function(state)
+    State.DebugTrack = state
+end, "Show projectile name in status (helps debugging)")
 
 ThrowTab:CreateToggle("Team Check", false, function(state)
     State.TeamCheck = state
@@ -679,7 +981,7 @@ SettingsTab:CreateDropdown("Theme", {"Dark", "Midnight", "BloodRed", "Green", "P
 end)
 
 SettingsTab:CreateSeparator()
-SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v3.1</b>\nSafe Throwable Magnet (won't fling players)\nPress RightShift to toggle UI.")
+SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v3.2</b>\nSnowball Launcher Magnet\nPress RightShift to toggle UI.")
 
 SettingsTab:CreateButton("Destroy UI", function()
     Library:CreateConfirmationDialog("Destroy UI", "Close the hub?", function()
@@ -697,4 +999,4 @@ end)
 --═══════════════════════════════════════════════════════════════
 Window:BindToggleKey(Enum.KeyCode.RightShift)
 
-Library:Notify("GuysModz Baddies", "v3.1 — safe magnet (won't fling players). RightShift toggles UI.")
+Library:Notify("GuysModz Baddies", "v3.2 — snowball launcher magnet ready. RightShift toggles UI.")
