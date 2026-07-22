@@ -13,7 +13,6 @@ local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/GuysS
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
-local Lighting = game:GetService("Lighting")
 local VirtualUser = game:GetService("VirtualUser")
 local CollectionService = game:GetService("CollectionService")
 
@@ -71,8 +70,6 @@ local State = {
     ExpandHitbox = false,
     HitboxSize = 12,
     ShowHitbox = false,
-
-    Fullbright = false,
 }
 
 local Connections = {}
@@ -660,24 +657,10 @@ end)
 --═══════════════════════════════════════════════════════════════
 local VisualsTab = Window:CreateTab("Visuals")
 
-VisualsTab:CreateToggle("Fullbright", false, function(state)
-    State.Fullbright = state
-    if state then
-        Lighting.Brightness = 2
-        Lighting.ClockTime = 14
-        Lighting.FogEnd = 100000
-        Lighting.GlobalShadows = false
-    else
-        Lighting.Brightness = 1
-        Lighting.GlobalShadows = true
-        Lighting.FogEnd = 10000
-    end
-end)
-
-VisualsTab:CreateDropdown("Time of Day", {"Morning", "Noon", "Evening", "Night"}, "Noon", function(selected)
-    local times = { Morning = 6, Noon = 12, Evening = 18, Night = 0 }
-    Lighting.ClockTime = times[selected] or 12
-end)
+VisualsTab:CreateLabel("Visuals")
+VisualsTab:CreateRichLabel(
+    "<font color=\"rgb(180,180,200)\">Fullbright and Time of Day were removed.\nThis tab is ready for ESP / tracers later if you want them.</font>"
+)
 
 --═══════════════════════════════════════════════════════════════
 -- TAB 4: SETTINGS
