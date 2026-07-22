@@ -75,6 +75,9 @@ local State = {
     ExpandHitbox = false,
     HitboxSize = 10,
     HitboxTransparency = 0.7,
+    HitboxMode = "Throwable", -- HRP / Full Body / Throwable
+    ExpandLimbs = true,
+    ThrowableHitbox = true, -- welded CanTouch part for projectiles
     TeamCheck = false,
 
     -- Silent Aim
@@ -122,12 +125,175 @@ local function Unbind(name)
 end
 
 local CurrentTarget = nil
-local OriginalSizes = {}
+local OriginalSizes = {} -- [BasePart] = original Size
+local OriginalProps = {} -- [BasePart] = {Transparency, CanCollide, Massless, CanTouch, CanQuery}
+local ThrowableParts = {} -- [Character] = Part
 local FOVCircle = nil
 local DrawingSupported = pcall(function()
     local d = Drawing.new("Circle")
     d:Remove()
 end)
+
+local BODY_PARTS = {
+    "HumanoidRootPart",
+    "Head",
+    "UpperTorso",
+    "LowerTorso",
+    "Torso",
+    "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand",
+    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot",
+    "Left Arm", "Right Arm", "Left Leg", "Right Leg",
+}
+
+local function ShouldExpandPlayer(player)
+    if player == LocalPlayer or not IsAlive(player) then
+        return false
+    end
+    if State.TeamCheck and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+        return false
+    end
+    return true
+end
+
+local function CachePart(part)
+    if not OriginalSizes[part] then
+        OriginalSizes[part] = part.Size
+        OriginalProps[part] = {
+            Transparency = part.Transparency,
+            CanCollide = part.CanCollide,
+            Massless = part.Massless,
+            CanTouch = part.CanTouch,
+            CanQuery = part.CanQuery,
+        }
+    end
+end
+
+local function ExpandPart(part, size)
+    if not part or not part:IsA("BasePart") then return end
+    CachePart(part)
+    part.Size = Vector3.new(size, size, size)
+    part.Transparency = State.HitboxTransparency
+    part.CanCollide = false
+    part.Massless = true
+    -- Critical for throwables / Touched / spatial queries
+    part.CanTouch = true
+    part.CanQuery = true
+end
+
+local function RestorePart(part)
+    if not part or not part.Parent then return end
+    local size = OriginalSizes[part]
+    local props = OriginalProps[part]
+    if size then
+        part.Size = size
+    end
+    if props then
+        part.Transparency = props.Transparency
+        part.CanCollide = props.CanCollide
+        part.Massless = props.Massless
+        part.CanTouch = props.CanTouch
+        part.CanQuery = props.CanQuery
+    else
+        part.Transparency = 0
+        part.Massless = false
+    end
+end
+
+local function ClearThrowablePart(character)
+    local p = ThrowableParts[character]
+    if p then
+        pcall(function()
+            if p.Parent then p:Destroy() end
+        end)
+        ThrowableParts[character] = nil
+    end
+end
+
+local function EnsureThrowablePart(character, hrp, size)
+    local part = ThrowableParts[character]
+    if part and part.Parent then
+        part.Size = Vector3.new(size, size, size)
+        part.Transparency = State.HitboxTransparency
+        part.CFrame = hrp.CFrame
+        part.CanTouch = true
+        part.CanQuery = true
+        part.CanCollide = false
+        part.Massless = true
+        return part
+    end
+
+    part = Instance.new("Part")
+    part.Name = "GuysModzThrowableHitbox"
+    part.Size = Vector3.new(size, size, size)
+    part.Transparency = State.HitboxTransparency
+    part.Color = Color3.fromRGB(255, 140, 30)
+    part.Material = Enum.Material.ForceField
+    part.Anchored = false
+    part.CanCollide = false
+    part.CanTouch = true
+    part.CanQuery = true
+    part.Massless = true
+    part.CastShadow = false
+    part.CFrame = hrp.CFrame
+    part.Parent = character
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = hrp
+    weld.Part1 = part
+    weld.Parent = part
+
+    ThrowableParts[character] = part
+    return part
+end
+
+local function RestoreAllHitboxes()
+    for part, _ in pairs(OriginalSizes) do
+        pcall(function()
+            RestorePart(part)
+        end)
+    end
+    OriginalSizes = {}
+    OriginalProps = {}
+
+    for character, _ in pairs(ThrowableParts) do
+        ClearThrowablePart(character)
+    end
+    ThrowableParts = {}
+end
+
+local function ApplyHitboxToPlayer(player)
+    local character = player.Character
+    if not character then return end
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local size = State.HitboxSize
+    local mode = State.HitboxMode
+
+    if mode == "HRP" or mode == "Throwable" or mode == "Full Body" then
+        ExpandPart(hrp, size)
+    end
+
+    if mode == "Full Body" or State.ExpandLimbs then
+        for _, name in ipairs(BODY_PARTS) do
+            local part = character:FindFirstChild(name)
+            if part and part:IsA("BasePart") and part ~= hrp then
+                -- limbs get a bit smaller than HRP so they don't look insane
+                local limbSize = math.max(2, size * 0.65)
+                ExpandPart(part, limbSize)
+            end
+        end
+    end
+
+    -- Dedicated welded part — best chance for throwable Touched events
+    if State.ThrowableHitbox or mode == "Throwable" then
+        EnsureThrowablePart(character, hrp, size)
+    else
+        ClearThrowablePart(character)
+    end
+end
 
 if DrawingSupported then
     FOVCircle = Drawing.new("Circle")
@@ -476,46 +642,50 @@ CombatTab:CreateSeparator()
 CombatTab:CreateLabel("Hitbox Expander")
 CombatTab:CreateBadge("Hitbox", Color3.fromRGB(255, 140, 30))
 
+CombatTab:CreateDropdown("Hitbox Mode", {"Throwable", "HRP", "Full Body"}, "Throwable", function(selected)
+    State.HitboxMode = selected
+    State.ThrowableHitbox = (selected == "Throwable" or selected == "Full Body")
+    State.ExpandLimbs = (selected == "Full Body")
+    Library:Notify("Hitbox", "Mode: " .. selected)
+end, "Throwable = best for snowballs/projectiles")
+
 CombatTab:CreateToggle("Expand Hitbox", false, function(state)
     State.ExpandHitbox = state
     if state then
-        Bind("Hitbox", RunService.RenderStepped:Connect(function()
+        Bind("Hitbox", RunService.Heartbeat:Connect(function()
             if not State.ExpandHitbox then return end
             for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and IsAlive(player) then
-                    if State.TeamCheck and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
-                        -- skip
-                    else
-                        local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-                        if hrp then
-                            if not OriginalSizes[hrp] then
-                                OriginalSizes[hrp] = hrp.Size
-                            end
-                            hrp.Size = Vector3.new(State.HitboxSize, State.HitboxSize, State.HitboxSize)
-                            hrp.Transparency = State.HitboxTransparency
-                            hrp.CanCollide = false
-                            hrp.Massless = true
-                        end
-                    end
+                if ShouldExpandPlayer(player) then
+                    pcall(ApplyHitboxToPlayer, player)
+                end
+            end
+            -- cleanup orphaned throwable parts
+            for character, part in pairs(ThrowableParts) do
+                if not character or not character.Parent or not part or not part.Parent then
+                    ClearThrowablePart(character)
                 end
             end
         end))
-        Library:Notify("Hitbox", "Hitbox expand enabled.")
+        Library:Notify("Hitbox", "Enabled (" .. State.HitboxMode .. ") — throwables supported.")
     else
         Unbind("Hitbox")
-        for hrp, size in pairs(OriginalSizes) do
-            pcall(function()
-                if hrp and hrp.Parent then
-                    hrp.Size = size
-                    hrp.Transparency = 0
-                    hrp.Massless = false
-                end
-            end)
-        end
-        OriginalSizes = {}
+        RestoreAllHitboxes()
         Library:Notify("Hitbox", "Hitbox expand disabled.")
     end
-end, "Make enemy HumanoidRootPart bigger")
+end, "Expand enemy hitboxes so melee + throwables land easier")
+
+CombatTab:CreateToggle("Throwable Part", true, function(state)
+    State.ThrowableHitbox = state
+    if not state then
+        for character, _ in pairs(ThrowableParts) do
+            ClearThrowablePart(character)
+        end
+    end
+end, "Weld a big CanTouch part to enemies (helps snowballs/throwables)")
+
+CombatTab:CreateToggle("Expand Limbs", true, function(state)
+    State.ExpandLimbs = state
+end, "Also expand arms/legs/torso/head")
 
 CombatTab:CreateSlider("Hitbox Size", 2, 50, 10, function(value)
     State.HitboxSize = value
@@ -525,17 +695,12 @@ CombatTab:CreateSlider("Hitbox Transparency", 0, 1, 0.7, function(value)
     State.HitboxTransparency = value
 end, "How see-through expanded hitboxes are", 2)
 
+CombatTab:CreateToggle("Team Check (Hitbox)", false, function(state)
+    State.TeamCheck = state
+end, "Don't expand teammates")
+
 CombatTab:CreateButton("Reset Hitboxes", function()
-    for hrp, size in pairs(OriginalSizes) do
-        pcall(function()
-            if hrp and hrp.Parent then
-                hrp.Size = size
-                hrp.Transparency = 0
-                hrp.Massless = false
-            end
-        end)
-    end
-    OriginalSizes = {}
+    RestoreAllHitboxes()
     Library:Notify("Hitbox", "Hitboxes reset.")
 end)
 
@@ -749,21 +914,14 @@ SettingsTab:CreateDropdown("Theme", {"Dark", "Midnight", "BloodRed", "Green", "P
 end)
 
 SettingsTab:CreateSeparator()
-SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v1.1</b>\nSilent Aim + Prediction + Hitbox Expand\nPress RightShift to toggle UI.")
+SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v1.2</b>\nSilent Aim + Prediction + Throwable Hitbox\nPress RightShift to toggle UI.")
 
 SettingsTab:CreateButton("Destroy UI", function()
     Library:CreateConfirmationDialog("Destroy UI", "Close the hub?", function()
         StopSilentAim()
         for name, _ in pairs(Connections) do Unbind(name) end
         if FOVCircle then pcall(function() FOVCircle:Remove() end) end
-        for hrp, size in pairs(OriginalSizes) do
-            pcall(function()
-                if hrp and hrp.Parent then
-                    hrp.Size = size
-                    hrp.Transparency = 0
-                end
-            end)
-        end
+        RestoreAllHitboxes()
         Watermark.Destroy()
         StatsDisplay.Destroy()
         Window:Destroy()
