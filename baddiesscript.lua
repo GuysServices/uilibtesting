@@ -1,7 +1,7 @@
 --[[
     ═══════════════════════════════════════════════════════════════
-     GuysModz Hub — Baddies Edition v2.0
-     Throwable Hitbox Expander
+     GuysModz Hub — Baddies Edition v2.1
+     Throwable Hitbox Expander (no freeze)
      
      Usage:
        loadstring(game:HttpGet("https://raw.githubusercontent.com/GuysServices/uilibtesting/main/baddiesscript.lua"))()
@@ -12,7 +12,6 @@ local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/GuysS
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local VirtualUser = game:GetService("VirtualUser")
@@ -22,10 +21,10 @@ local LocalPlayer = Players.LocalPlayer
 --═══════════════════════════════════════════════════════════════
 -- LOADING + WINDOW
 --═══════════════════════════════════════════════════════════════
-Library:CreateLoadingScreen("Loading GuysModz Baddies Hub...", 1.2)
-task.wait(1.2)
+Library:CreateLoadingScreen("Loading GuysModz Baddies Hub...", 1.0)
+task.wait(1.0)
 
-local Watermark = Library:CreateWatermark("GuysModz Baddies v2.0")
+local Watermark = Library:CreateWatermark("GuysModz Baddies v2.1")
 local StatsDisplay = Library:CreateStatsDisplay()
 local Window = Library:CreateWindow("GuysModz | Baddies")
 
@@ -48,7 +47,6 @@ local function IsAlive(player)
     return hum and hum.Health > 0
 end
 
--- Anti-AFK
 LocalPlayer.Idled:Connect(function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
@@ -61,7 +59,7 @@ local State = {
     ExpandHitbox = false,
     HitboxSize = 15,
     TeamCheck = false,
-    ShowHitbox = false, -- if true, slightly fade expanded parts so you can see size
+    ShowHitbox = false,
     Fullbright = false,
 }
 
@@ -80,10 +78,13 @@ local function Unbind(name)
     end
 end
 
--- Cache: [BasePart] = { Size, Transparency, CanCollide, Massless, CanTouch, CanQuery }
-local Original = {}
+-- Original sizes only (we never touch Massless/physics props that freeze people)
+local OriginalSizes = {} -- [BasePart] = Vector3
+local OriginalTransparency = {} -- [BasePart] = number
 
--- Parts we expand for throwables (real character parts — not fake overlays)
+-- Parts safe to expand for throwables.
+-- NOTE: We intentionally do NOT set Massless / mess with HRP physics.
+-- Freezing was caused by Massless=true + constant physics prop writes on root.
 local EXPAND_NAMES = {
     "HumanoidRootPart",
     "Head",
@@ -102,57 +103,73 @@ local function ShouldTarget(player)
     return true
 end
 
-local function CachePart(part)
-    if Original[part] then return end
-    Original[part] = {
-        Size = part.Size,
-        Transparency = part.Transparency,
-        CanCollide = part.CanCollide,
-        Massless = part.Massless,
-        CanTouch = part.CanTouch,
-        CanQuery = part.CanQuery,
-    }
-end
-
 local function RestorePart(part)
-    local data = Original[part]
-    if not data or not part or not part.Parent then return end
-    pcall(function()
-        part.Size = data.Size
-        part.Transparency = data.Transparency
-        part.CanCollide = data.CanCollide
-        part.Massless = data.Massless
-        part.CanTouch = data.CanTouch
-        part.CanQuery = data.CanQuery
-    end)
+    if not part or not part.Parent then return end
+    local size = OriginalSizes[part]
+    if size then
+        pcall(function()
+            part.Size = size
+            part.CanCollide = (part.Name == "HumanoidRootPart") and false or part.CanCollide
+        end)
+    end
+    local tr = OriginalTransparency[part]
+    if tr ~= nil then
+        pcall(function()
+            part.Transparency = tr
+        end)
+    end
 end
 
 local function RestoreAll()
-    for part, _ in pairs(Original) do
+    for part, _ in pairs(OriginalSizes) do
         RestorePart(part)
     end
-    Original = {}
+    -- Always clear CanCollide override carefully — only restore size/transparency
+    OriginalSizes = {}
+    OriginalTransparency = {}
 end
 
 local function ExpandPart(part, size)
     if not part or not part:IsA("BasePart") then return end
-    CachePart(part)
 
-    -- Real size expand — this is what throwable Touched / client hit checks use
-    part.Size = Vector3.new(size, size, size)
-    part.CanCollide = false
-    part.Massless = true
-    part.CanTouch = true
-    part.CanQuery = true
+    -- Cache original once
+    if not OriginalSizes[part] then
+        OriginalSizes[part] = part.Size
+        OriginalTransparency[part] = part.Transparency
+    end
 
-    -- NEVER force high transparency (that made people disappear)
+    local target = Vector3.new(size, size, size)
+
+    -- Only write Size when it actually changed (stops physics thrash / freeze)
+    if (part.Size - target).Magnitude > 0.05 then
+        part.Size = target
+    end
+
+    -- CanCollide false stops giant boxes from pushing/locking characters
+    if part.CanCollide then
+        part.CanCollide = false
+    end
+
+    -- CanTouch/CanQuery help client-side throwable contact (safe, no freeze)
+    if part.CanTouch == false then
+        part.CanTouch = true
+    end
+    if part.CanQuery == false then
+        part.CanQuery = true
+    end
+
+    -- DO NOT set Massless — that freezes / breaks character physics
+    -- DO NOT set Anchored
+    -- DO NOT parent extra parts into the character
+
     if State.ShowHitbox then
-        part.Transparency = 0.55
+        if part.Transparency ~= 0.6 then
+            part.Transparency = 0.6
+        end
     else
-        -- keep original look so avatars stay normal
-        local data = Original[part]
-        if data then
-            part.Transparency = data.Transparency
+        local original = OriginalTransparency[part]
+        if original ~= nil and part.Transparency ~= original then
+            part.Transparency = original
         end
     end
 end
@@ -171,6 +188,7 @@ local function ApplyHitbox(player)
 end
 
 local function StartHitbox()
+    -- Heartbeat is fine; we only write when values differ
     Bind("Hitbox", RunService.Heartbeat:Connect(function()
         if not State.ExpandHitbox then return end
         for _, player in ipairs(Players:GetPlayers()) do
@@ -186,28 +204,28 @@ local function StopHitbox()
     RestoreAll()
 end
 
--- Clean up when players leave / die
 Players.PlayerRemoving:Connect(function(player)
     local char = player.Character
     if not char then return end
     for _, name in ipairs(EXPAND_NAMES) do
         local part = char:FindFirstChild(name)
-        if part and Original[part] then
+        if part and OriginalSizes[part] then
             RestorePart(part)
-            Original[part] = nil
+            OriginalSizes[part] = nil
+            OriginalTransparency[part] = nil
         end
     end
 end)
 
 --═══════════════════════════════════════════════════════════════
--- TAB 1: HITBOX (throwable only)
+-- TAB 1: HITBOX
 --═══════════════════════════════════════════════════════════════
 local HitboxTab = Window:CreateTab("Hitbox")
 
 HitboxTab:CreateLabel("Throwable Hitbox Expander")
 HitboxTab:CreateBadge("Throwables", Color3.fromRGB(255, 140, 30))
 HitboxTab:CreateRichLabel(
-    "<font color=\"rgb(180,180,200)\">Expands real body parts (HRP/Head/Torso) so snowballs and throwables can land easier.\nPlayers stay visible — no orange blobs, no grouping.</font>"
+    "<font color=\"rgb(180,180,200)\">Expands HRP / Head / Torso for throwables.\nNo Massless, no fake parts — players keep moving.</font>"
 )
 
 HitboxTab:CreateSeparator()
@@ -216,30 +234,29 @@ HitboxTab:CreateToggle("Expand Hitbox", false, function(state)
     State.ExpandHitbox = state
     if state then
         StartHitbox()
-        Library:Notify("Hitbox", "Throwable hitbox ON — size " .. tostring(State.HitboxSize))
+        Library:Notify("Hitbox", "ON — size " .. tostring(State.HitboxSize))
     else
         StopHitbox()
-        Library:Notify("Hitbox", "Hitbox OFF — players restored")
+        Library:Notify("Hitbox", "OFF — restored")
     end
 end, "Expand enemy hitboxes for throwables")
 
 HitboxTab:CreateSlider("Hitbox Size", 5, 40, 15, function(value)
     State.HitboxSize = value
-end, "Bigger = easier throwable hits")
+end, "Bigger = easier hits")
 
 HitboxTab:CreateToggle("Show Hitbox", false, function(state)
     State.ShowHitbox = state
     if not state then
-        -- restore visual transparency immediately while keeping size if still expanded
-        for part, data in pairs(Original) do
+        for part, tr in pairs(OriginalTransparency) do
             if part and part.Parent then
                 pcall(function()
-                    part.Transparency = data.Transparency
+                    part.Transparency = tr
                 end)
             end
         end
     end
-end, "Slightly fade parts so you can see the expanded size")
+end, "Fade parts slightly so you can see the size")
 
 HitboxTab:CreateToggle("Team Check", false, function(state)
     State.TeamCheck = state
@@ -247,17 +264,12 @@ end, "Don't expand teammates")
 
 HitboxTab:CreateButton("Reset Hitboxes", function()
     RestoreAll()
-    if State.ExpandHitbox then
-        -- will re-apply next frame
-        Library:Notify("Hitbox", "Reset — re-applying...")
-    else
-        Library:Notify("Hitbox", "All hitboxes restored")
-    end
+    Library:Notify("Hitbox", State.ExpandHitbox and "Reset — re-applying next frame" or "Restored")
 end)
 
 HitboxTab:CreateSeparator()
 HitboxTab:CreateRichLabel(
-    "<b>Tips</b>\n• Start around size <font color=\"rgb(100,200,255)\">12–20</font>\n• Keep <b>Show Hitbox</b> off for normal-looking players\n• If hits still miss, Baddies may check throwables on the server (client expand can't fix that)"
+    "<b>Tips</b>\n• Size <font color=\"rgb(100,200,255)\">12–20</font> is a good start\n• Leave Show Hitbox off for normal look\n• If throwables still miss, the game may validate hits on the server"
 )
 
 --═══════════════════════════════════════════════════════════════
@@ -359,7 +371,7 @@ SettingsTab:CreateDropdown("Theme", {"Dark", "Midnight", "BloodRed", "Green", "P
 end)
 
 SettingsTab:CreateSeparator()
-SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v2.0</b>\nThrowable Hitbox Expander only\nPress RightShift to toggle UI.")
+SettingsTab:CreateRichLabel("<b>GuysModz Baddies Hub v2.1</b>\nThrowable Hitbox (no freeze)\nPress RightShift to toggle UI.")
 
 SettingsTab:CreateButton("Destroy UI", function()
     Library:CreateConfirmationDialog("Destroy UI", "Close the hub?", function()
@@ -376,4 +388,4 @@ end)
 --═══════════════════════════════════════════════════════════════
 Window:BindToggleKey(Enum.KeyCode.RightShift)
 
-Library:Notify("GuysModz Baddies", "v2.0 loaded — Throwable Hitbox ready. RightShift toggles UI.")
+Library:Notify("GuysModz Baddies", "v2.1 loaded — hitbox won't freeze players. RightShift toggles UI.")
